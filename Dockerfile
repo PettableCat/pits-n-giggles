@@ -34,20 +34,22 @@ COPY apps/ ./apps/
 COPY lib/ ./lib/
 COPY meta/ ./meta/
 COPY assets/ ./assets/
-COPY png_config.json ./png_config.json
 
-# Save Data Viewer
-EXPOSE 4767/tcp
-# Web UI
-EXPOSE 4768/tcp
-# F1 telemetry UDP receiver
-EXPOSE 20777/udp
+# Default ports (primary session). Multi-session opens additional ports from config.
+# Use network_mode: host in docker-compose for multi-session support.
+EXPOSE 4767/tcp 4768/tcp 20777/udp
+
+# Headless container settings
+ENV PYTHONUNBUFFERED=1 \
+    QT_QPA_PLATFORM=offscreen \
+    PNG_HEADLESS=1 \
+    PNG_HTTP_PORT=4768
 
 # Run as non-root user for security (CIS Docker Benchmark 4.1)
 RUN useradd --create-home --shell /bin/bash appuser
 USER appuser
 
 HEALTHCHECK --interval=30s --timeout=5s \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:4768/')" || exit 1
+    CMD python -c "import os,urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PNG_HTTP_PORT\",\"4768\")}/')" || exit 1
 
-ENTRYPOINT ["python", "-m", "apps.backend"]
+CMD ["python", "-m", "apps.backend"]
