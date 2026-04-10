@@ -48,6 +48,7 @@ from lib.inter_task_communicator import (
 from lib.logger import PngLogger
 from lib.save_to_disk import save_json_to_file
 from lib.telemetry_manager import AsyncF1TelemetryManager
+from lib.track_map_generator import TrackMapCollector
 from lib.wdt import WatchDogTimerAsync
 
 # -------------------------------------- UTIL CLASSES ------------------------------------------------------------------
@@ -198,6 +199,12 @@ class F1TelemetryHandler:
 
         self.m_itc_queue_suffix: str = itc_queue_suffix
         self.m_manager_task: Optional[asyncio.Task] = None
+
+        # Auto-generate SVG track maps from live telemetry data
+        from pathlib import Path
+        track_maps_dir = Path(__file__).resolve().parents[3] / "assets" / "track-maps"
+        self.m_track_map_collector = TrackMapCollector(target_dir=track_maps_dir, logger=logger)
+
         self.registerCallbacks()
 
     def getTask(self, name: Optional[str] = "Game Telemetry Listener Task") -> asyncio.Task:
@@ -290,6 +297,11 @@ class F1TelemetryHandler:
                                    packet.m_header.m_sessionUID)
                 self.clearAllDataStructures("Session UID changed")
 
+            # Feed track identity to the track map collector
+            if packet.m_trackId is not None and packet.m_trackLength:
+                track_name = packet.m_trackId.name
+                self.m_track_map_collector.set_track(track_name, packet.m_trackLength)
+
         @self.m_manager.on_packet(F1PacketType.LAP_DATA)
         async def processLapDataUpdate(packet: PacketLapData) -> None:
             """Update the data structures with lap data
@@ -301,6 +313,10 @@ class F1TelemetryHandler:
             if self.m_session_state_ref.m_session_info.m_total_laps is not None:
                 self.m_session_state_ref.processLapDataUpdate(packet)
                 self.m_session_state_ref.setRaceOngoing()
+
+            # Feed lap distances to track map collector and try to generate
+            self.m_track_map_collector.on_lap_data(packet.m_lapData)
+            self.m_track_map_collector.generate_if_ready()
 
         @self.m_manager.on_packet(F1PacketType.EVENT)
         async def handleEvent(packet: PacketEventData) -> None:
@@ -437,6 +453,9 @@ class F1TelemetryHandler:
             """
 
             self.m_session_state_ref.processMotionUpdate(packet)
+
+            # Feed world positions to track map collector
+            self.m_track_map_collector.on_motion(packet.m_carMotionData)
 
         # Register the car setup handler if and only if user has allowed this
         if self.m_session_state_ref.m_process_car_setups:
@@ -630,6 +649,7 @@ class F1TelemetryHandler:
         self.m_session_state_ref.processSessionStarted(reason)
         self.m_data_cleared_this_session = True
         self.m_final_classification_processed = False
+        self.m_track_map_collector.reset()
 
     async def postGameDumpToFile(self, final_json: Dict[str, Any], session_uid: int) -> None:
         """
