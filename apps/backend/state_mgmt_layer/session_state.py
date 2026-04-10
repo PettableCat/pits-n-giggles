@@ -319,6 +319,7 @@ class SessionState:
         'm_connected_to_sim',
         'm_race_ctrl',
         'm_flashback_occurred',
+        'm_itc_queue_suffix',
     )
 
     def __init__(self,
