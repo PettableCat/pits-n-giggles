@@ -207,9 +207,9 @@ class TrackMap {
             dot.dataset.ersMode      = ersInfo?.['ers-mode'] ?? 'N/A';
             dot.dataset.tyreWearAvg  = this._avgTyreWear(tyreInfo?.['current-wear']);
 
-            // Update pinned popup if this driver is pinned
+            // Update pinned popup content if this driver is pinned
+            // (position is handled by rAF tracking loop)
             if (this._pinnedDriver === index) {
-                this._updatePinnedPopupPosition(dot);
                 this._updatePinnedPopupContent(dot);
             }
         }
@@ -455,7 +455,8 @@ class TrackMap {
         this._pinnedDriver = index;
         this._pinnedPopup.style.display = 'block';
         this._updatePinnedPopupContent(dot);
-        this._updatePinnedPopupPosition(dot);
+        // Start rAF tracking loop
+        this._startPopupTracking();
         // Hide hover tooltip to avoid duplication
         this._hideTooltip();
     }
@@ -463,22 +464,30 @@ class TrackMap {
     _unpinPopup() {
         this._pinnedDriver = null;
         this._pinnedPopup.style.display = 'none';
+        this._stopPopupTracking();
     }
 
-    _updatePinnedPopupPosition(dot) {
-        // Use the SVG target attributes (cx/cy) — not getBoundingClientRect()
-        // which returns the mid-transition animated position.  This way the
-        // popup CSS transition targets the same destination as the dot.
-        const cx = parseFloat(dot.getAttribute('cx'));
-        const cy = parseFloat(dot.getAttribute('cy'));
-        const ctm = dot.getScreenCTM();
-        if (!ctm) return;
-        const screenX = cx * ctm.a + cy * ctm.c + ctm.e;
-        const screenY = cx * ctm.b + cy * ctm.d + ctm.f;
-        const r = parseFloat(dot.getAttribute('r') || 5);
-        const offsetX = r * ctm.a;  // dot radius in screen pixels
-        this._pinnedPopup.style.left = (screenX + window.scrollX + offsetX + 8) + 'px';
-        this._pinnedPopup.style.top  = (screenY + window.scrollY - 10) + 'px';
+    /** rAF loop that keeps the popup glued to the dot's animated position. */
+    _startPopupTracking() {
+        this._stopPopupTracking();
+        const track = () => {
+            const dot = this._pinnedDriver != null
+                ? this.driverDots.get(this._pinnedDriver)
+                : null;
+            if (!dot) { this._popupRafId = null; return; }
+            const rect = dot.getBoundingClientRect();
+            this._pinnedPopup.style.left = (rect.right + window.scrollX + 8) + 'px';
+            this._pinnedPopup.style.top  = (rect.top + window.scrollY - 10) + 'px';
+            this._popupRafId = requestAnimationFrame(track);
+        };
+        this._popupRafId = requestAnimationFrame(track);
+    }
+
+    _stopPopupTracking() {
+        if (this._popupRafId) {
+            cancelAnimationFrame(this._popupRafId);
+            this._popupRafId = null;
+        }
     }
 
     _updatePinnedPopupContent(dot) {

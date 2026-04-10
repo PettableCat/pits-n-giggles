@@ -510,8 +510,6 @@ input[type="number"]::-webkit-outer-spin-button {
     z-index: 1055;
     white-space: nowrap;
     pointer-events: auto;
-    /* Follow the driver dot smoothly (matches dot cx/cy transition) */
-    transition: left 0.4s ease, top 0.4s ease;
 }
 
 .pinned-popup-close {
