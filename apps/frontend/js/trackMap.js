@@ -466,9 +466,19 @@ class TrackMap {
     }
 
     _updatePinnedPopupPosition(dot) {
-        const rect = dot.getBoundingClientRect();
-        this._pinnedPopup.style.left = (rect.right + window.scrollX + 8) + 'px';
-        this._pinnedPopup.style.top  = (rect.top + window.scrollY - 10) + 'px';
+        // Use the SVG target attributes (cx/cy) — not getBoundingClientRect()
+        // which returns the mid-transition animated position.  This way the
+        // popup CSS transition targets the same destination as the dot.
+        const cx = parseFloat(dot.getAttribute('cx'));
+        const cy = parseFloat(dot.getAttribute('cy'));
+        const ctm = dot.getScreenCTM();
+        if (!ctm) return;
+        const screenX = cx * ctm.a + cy * ctm.c + ctm.e;
+        const screenY = cx * ctm.b + cy * ctm.d + ctm.f;
+        const r = parseFloat(dot.getAttribute('r') || 5);
+        const offsetX = r * ctm.a;  // dot radius in screen pixels
+        this._pinnedPopup.style.left = (screenX + window.scrollX + offsetX + 8) + 'px';
+        this._pinnedPopup.style.top  = (screenY + window.scrollY - 10) + 'px';
     }
 
     _updatePinnedPopupContent(dot) {
