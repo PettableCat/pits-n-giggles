@@ -288,6 +288,14 @@ def main() -> None:
         "--rotate", type=float, default=0,
         help="Rotate track CCW by degrees (e.g. 90 to fix rightward rotation)"
     )
+    parser.add_argument(
+        "--flip-x", action="store_true",
+        help="Mirror track horizontally"
+    )
+    parser.add_argument(
+        "--flip-y", action="store_true",
+        help="Mirror track vertically"
+    )
 
     args = parser.parse_args()
 
@@ -319,6 +327,20 @@ def main() -> None:
     if args.rotate:
         print(f"[2b]  Rotating {args.rotate}° CCW...")
         avg_points = rotate_points(avg_points, args.rotate)
+
+    if args.flip_x or args.flip_y:
+        cx = sum(p[0] for p in avg_points) / len(avg_points)
+        cy = sum(p[1] for p in avg_points) / len(avg_points)
+        flipped = []
+        for x, y in avg_points:
+            fx = 2 * cx - x if args.flip_x else x
+            fy = 2 * cy - y if args.flip_y else y
+            flipped.append((fx, fy))
+        avg_points = flipped
+        flags = []
+        if args.flip_x: flags.append("X")
+        if args.flip_y: flags.append("Y")
+        print(f"[2c]  Flipped {'+'.join(flags)}")
 
     print("[3/4] Transforming to SVG coordinates...")
     svg_points = world_to_svg(avg_points, args.width, args.height, args.padding, args.fill)
