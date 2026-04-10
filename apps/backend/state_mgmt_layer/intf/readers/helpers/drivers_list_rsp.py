@@ -428,12 +428,17 @@ class DriversListRsp(BaseAPI):
         }
 
     def _calculateLapProgress(self, driver_data: DataPerDriver) -> Optional[float]:
-        """Calculate lap progress percentage."""
+        """Calculate lap progress percentage.
+
+        m_lapDistance can be negative when a car is in the pit lane (pit exit
+        is behind the start/finish line).  Wrap via modulo so the dot appears
+        near the end of the track rather than clamping to 0 %.
+        """
         lap_data = driver_data.m_packet_copies.m_packet_lap_data
         if not lap_data or not self.m_track_length:
             return None
 
-        return (lap_data.m_lapDistance / self.m_track_length) * 100.0
+        return (lap_data.m_lapDistance % self.m_track_length) / self.m_track_length * 100.0
 
     def _getSpeedTrapRecord(self, driver_data: DataPerDriver) -> Optional[float]:
         """Get speed trap record if available."""
