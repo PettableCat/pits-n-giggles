@@ -431,8 +431,9 @@ class DriversListRsp(BaseAPI):
         """Calculate lap progress percentage.
 
         m_lapDistance can be negative when a car is in the pit lane (pit exit
-        is behind the start/finish line).  Wrap via modulo so the dot appears
-        near the end of the track rather than clamping to 0 %.
+        is behind the start/finish line) or on the grid (grid slots sit behind
+        the start/finish line).  Wrap via modulo so the dot appears at the
+        correct physical track position in all cases.
         """
         lap_data = driver_data.m_packet_copies.m_packet_lap_data
         if not lap_data or not self.m_track_length:

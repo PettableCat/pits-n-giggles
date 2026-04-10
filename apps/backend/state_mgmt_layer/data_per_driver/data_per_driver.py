@@ -93,6 +93,7 @@ class DataPerDriver:
         "m_delayed_tyre_change_data",
         "m_race_ctrl",
         "m_delta_mgr",
+        "m_extrapolator_tyre_set_key",
     )
 
     CAR_DMG_RACE_CTRL_MSG_INTERESTED_FIELDS = [
@@ -170,6 +171,9 @@ class DataPerDriver:
 
         # Lap delta
         self.m_delta_mgr: LapDeltaManager = LapDeltaManager()
+
+        # Tracks which tyre set key the extrapolator was last fed with
+        self.m_extrapolator_tyre_set_key: Optional[str] = None
 
     @property
     def is_valid(self) -> bool:
@@ -605,6 +609,13 @@ class DataPerDriver:
 
         # Add the tyre wear data into the extrapolator
         if tyre_set_id := self._getCurrentTyreSetKey():
+            # Guard: if the tyre set changed since the last add, clear stale data first.
+            # This is a fallback for cases where the PendingEvents mechanism misses the change.
+            if self.m_extrapolator_tyre_set_key is not None and self.m_extrapolator_tyre_set_key != tyre_set_id:
+                self.m_logger.info("Driver %s - extrapolator tyre set key mismatch (%s -> %s), clearing stale data",
+                                   str(self), self.m_extrapolator_tyre_set_key, tyre_set_id)
+                self.m_tyre_info.m_tyre_wear_extrapolator.clear()
+            self.m_extrapolator_tyre_set_key = tyre_set_id
             self.m_tyre_info.m_tyre_wear_extrapolator.add(TyreWearPerLap(
                 fl_tyre_wear=self.m_packet_copies.m_packet_car_damage.m_tyresWear[F1Utils.INDEX_FRONT_LEFT],
                 fr_tyre_wear=self.m_packet_copies.m_packet_car_damage.m_tyresWear[F1Utils.INDEX_FRONT_RIGHT],
@@ -772,6 +783,7 @@ class DataPerDriver:
         # Tyre set change detected. clear the extrapolation data
         self.m_tyre_info.m_tyre_wear_extrapolator.clear()
         self.m_tyre_info.m_tyre_wear_extrapolator.add(initial_tyre_wear)
+        self.m_extrapolator_tyre_set_key = fitted_tyre_set_key
 
         # Add race control message - there needs to be atleast 2 tyre set history entries (one prev and one current)
         if self.m_tyre_info.m_tyre_set_history_manager.length >= 2:
