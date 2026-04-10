@@ -2201,8 +2201,8 @@ class DrawerManager {
         // Observer: moves track map content to drawer when injected at < 1024px
         this._trackMapObserver = new MutationObserver(() => {
             if (this._drawerMediaQuery.matches) {
-                // Clear stale fallback text before moving fresh content
-                this.trackMapDrawerBody.querySelectorAll('.track-map-fallback').forEach(el => el.remove());
+                // Clear stale content (old SVG / fallback) before moving fresh content
+                this.trackMapDrawerBody.innerHTML = '';
                 while (this.trackMapInlineParent.firstChild) {
                     this.trackMapDrawerBody.appendChild(this.trackMapInlineParent.firstChild);
                 }
