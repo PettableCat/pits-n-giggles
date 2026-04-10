@@ -2200,8 +2200,10 @@ class DrawerManager {
 
         // Observer: moves track map content to drawer when injected at < 1024px
         this._trackMapObserver = new MutationObserver(() => {
-            if (this._drawerMediaQuery.matches) {
-                // Clear stale content (old SVG / fallback) before moving fresh content
+            if (this._drawerMediaQuery.matches && this.trackMapInlineParent.firstChild) {
+                // Clear stale content (old SVG / fallback) before moving fresh content.
+                // Guard: only act when inline has content — the move itself triggers
+                // a second observer callback (removal from inline) which must be a no-op.
                 this.trackMapDrawerBody.innerHTML = '';
                 while (this.trackMapInlineParent.firstChild) {
                     this.trackMapDrawerBody.appendChild(this.trackMapInlineParent.firstChild);
