@@ -97,7 +97,8 @@ def setupTelemetryTask(
         session_state: SessionState,
         logger: PngLogger,
         ver_str: str,
-        tasks: List[asyncio.Task]) -> "F1TelemetryHandler":
+        tasks: List[asyncio.Task],
+        itc_queue_suffix: str = "") -> "F1TelemetryHandler":
     """Entry point to start the F1 telemetry server.
 
     Args:
@@ -118,6 +119,7 @@ def setupTelemetryTask(
         session_state=session_state,
         replay_server=replay_server,
         ver_str=ver_str,
+        itc_queue_suffix=itc_queue_suffix,
     )
     tasks.append(telemetry_server.getTask())
     tasks.append(asyncio.create_task(telemetry_server.getWatchdogTask(), name="Watchdog Timer Task"))
@@ -139,7 +141,8 @@ class F1TelemetryHandler:
         logger: PngLogger,
         session_state: SessionState,
         replay_server: bool = False,
-        ver_str: str = "dev") -> None:
+        ver_str: str = "dev",
+        itc_queue_suffix: str = "") -> None:
         """
         Initialize F1TelemetryHandler.
 
@@ -193,6 +196,7 @@ class F1TelemetryHandler:
             mfd_interaction=settings.HUD.mfd_interaction_udp_action_code,
         )
 
+        self.m_itc_queue_suffix: str = itc_queue_suffix
         self.m_manager_task: Optional[asyncio.Task] = None
         self.registerCallbacks()
 
@@ -389,7 +393,7 @@ class F1TelemetryHandler:
                     m_message_type=ITCMessage.MessageType.FINAL_CLASSIFICATION_NOTIFICATION,
                     m_message=FinalClassificationNotification(player_position)
                 )
-                await AsyncInterTaskCommunicator().send("frontend-update", message)
+                await AsyncInterTaskCommunicator().send(f"frontend-update{self.m_itc_queue_suffix}", message)
 
         @self.m_manager.on_packet(F1PacketType.CAR_DAMAGE)
         async def processCarDamageUpdate(packet: PacketCarDamageData):
@@ -720,7 +724,7 @@ class F1TelemetryHandler:
         """
 
         if custom_marker_obj := self.m_session_state_ref.getInsertCustomMarkerEntryObj():
-            await AsyncInterTaskCommunicator().send("frontend-update", ITCMessage(
+            await AsyncInterTaskCommunicator().send(f"frontend-update{self.m_itc_queue_suffix}", ITCMessage(
                 m_message_type=ITCMessage.MessageType.CUSTOM_MARKER,
                 m_message=custom_marker_obj))
 
@@ -728,7 +732,7 @@ class F1TelemetryHandler:
         """Send the tyre delta notification to the frontend."""
         if messages := self.m_session_state_ref.getTyreDeltaNotificationMessages():
             await AsyncInterTaskCommunicator().send(
-                "frontend-update",
+                f"frontend-update{self.m_itc_queue_suffix}",
                 ITCMessage(
                     m_message_type=ITCMessage.MessageType.TYRE_DELTA_NOTIFICATION_V2,
                     m_message=TyreDeltaNotificationMessageCollection(messages)
@@ -742,7 +746,7 @@ class F1TelemetryHandler:
             oid (Optional[str]): The overlay ID to toggle.
         """
         await AsyncInterTaskCommunicator().send(
-            "hud-notifier",
+            f"hud-notifier{self.m_itc_queue_suffix}",
             ITCMessage(
                 m_message_type=ITCMessage.MessageType.HUD_TOGGLE_NOTIFICATION,
                 m_message=HudToggleNotification(oid)
@@ -752,7 +756,7 @@ class F1TelemetryHandler:
     async def _processCycleMFD(self) -> None:
         """Send the cycle MFD notification to the HUD manager."""
         await AsyncInterTaskCommunicator().send(
-            "hud-notifier",
+            f"hud-notifier{self.m_itc_queue_suffix}",
             ITCMessage(
                 m_message_type=ITCMessage.MessageType.HUD_CYCLE_MFD_NOTIFICATION,
                 m_message=HudCycleMfdNotification()
@@ -762,7 +766,7 @@ class F1TelemetryHandler:
     async def _processPrevPageMFD(self) -> None:
         """Send the previous page MFD notification to the HUD manager."""
         await AsyncInterTaskCommunicator().send(
-            "hud-notifier",
+            f"hud-notifier{self.m_itc_queue_suffix}",
             ITCMessage(
                 m_message_type=ITCMessage.MessageType.HUD_PREV_PAGE_MFD_NOTIFICATION,
                 m_message=HudPrevPageMfdNotification() # same message, different type. No extra info needed for prev page
@@ -772,7 +776,7 @@ class F1TelemetryHandler:
     async def _processMFDInteraction(self) -> None:
         """Send the MFD interaction notification to the HUD manager."""
         await AsyncInterTaskCommunicator().send(
-            "hud-notifier",
+            f"hud-notifier{self.m_itc_queue_suffix}",
             ITCMessage(
                 m_message_type=ITCMessage.MessageType.HUD_MFD_INTERACTION_NOTIFICATION,
                 m_message=HudMfdInteractionNotification()

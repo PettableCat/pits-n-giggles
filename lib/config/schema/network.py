@@ -35,7 +35,12 @@ from .utils import PortType, port_field, udp_action_field
 
 
 class AdditionalServer(BaseModel):
-    """Configuration for an additional HTTP server port in multi-session mode."""
+    """Configuration for an additional server in multi-session mode.
+
+    Each entry represents one independent telemetry session: a dedicated UDP
+    telemetry port that feeds its own session state, served on a dedicated
+    HTTP port.
+    """
     port: int = Field(
         ...,
         ge=1024,
@@ -46,6 +51,18 @@ class AdditionalServer(BaseModel):
                 "type": "text_box"
             },
             "port_type": str(PortType.TCP)
+        }
+    )
+    telemetry_port: int = Field(
+        ...,
+        ge=1024,
+        le=65535,
+        description="F1 UDP Telemetry Port",
+        json_schema_extra={
+            "ui": {
+                "type": "text_box"
+            },
+            "port_type": str(PortType.UDP)
         }
     )
     label: str = Field(
@@ -160,8 +177,10 @@ class NetworkSettings(ConfigDiffMixin, BaseModel):
                 "group": "Multi-Session Ports",
                 "collapsed": True,
                 "ext_info": [
-                    "Additional HTTP server ports for multi-driver sessions.",
-                    "Each port serves its own Dashboard, Engineer View and Stream Overlay."
+                    "Additional sessions for multi-driver setups.",
+                    "Each entry has its own UDP telemetry port and HTTP server port,",
+                    "providing a fully independent session with its own Dashboard,",
+                    "Engineer View and Stream Overlay."
                 ]
             }
         }
@@ -204,10 +223,14 @@ class NetworkSettings(ConfigDiffMixin, BaseModel):
 
         # Include additional_servers ports in conflict detection
         for i, server in enumerate(self.additional_servers):
+            label_tag = f" '{server.label}'" if server.label else ""
             used_ports[str(PortType.TCP)][server.port].append(
-                (f"additional_servers[{i}]",
-                 f"Multi-Session Port '{server.label}' (:{server.port})" if server.label
-                 else f"Multi-Session Port :{server.port}")
+                (f"additional_servers[{i}].port",
+                 f"Multi-Session{label_tag} HTTP (:{server.port})")
+            )
+            used_ports[str(PortType.UDP)][server.telemetry_port].append(
+                (f"additional_servers[{i}].telemetry_port",
+                 f"Multi-Session{label_tag} Telemetry (:{server.telemetry_port})")
             )
 
         conflicts = {

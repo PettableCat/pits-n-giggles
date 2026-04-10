@@ -1184,7 +1184,7 @@ class SettingsWindow(QDialog):
         entries_widget.setLayout(entries_layout)
 
         for server in field_value:
-            row = self._build_server_entry_row(server.port, server.label, field_path, entries_layout)
+            row = self._build_server_entry_row(server.port, server.telemetry_port, server.label, field_path, entries_layout)
             entries_layout.addWidget(row)
 
         main_layout.addWidget(entries_widget)
@@ -1218,6 +1218,7 @@ class SettingsWindow(QDialog):
 
     def _build_server_entry_row(self,
                                 port: int,
+                                telemetry_port: int,
                                 label: str,
                                 field_path: str,
                                 entries_layout: QVBoxLayout) -> QFrame:
@@ -1237,7 +1238,7 @@ class SettingsWindow(QDialog):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
 
-        port_label = QLabel("Port:")
+        port_label = QLabel("HTTP:")
         port_label.setFont(QFont("Roboto", 9))
         layout.addWidget(port_label)
 
@@ -1249,6 +1250,19 @@ class SettingsWindow(QDialog):
             lambda _text, fp=field_path: self._sync_additional_servers(fp)
         )
         layout.addWidget(port_edit)
+
+        telemetry_label = QLabel("UDP:")
+        telemetry_label.setFont(QFont("Roboto", 9))
+        layout.addWidget(telemetry_label)
+
+        telemetry_port_edit = QLineEdit(str(telemetry_port))
+        telemetry_port_edit.setFont(QFont("Formula1", 8))
+        telemetry_port_edit.setMaximumWidth(80)
+        telemetry_port_edit.setMaxLength(5)
+        telemetry_port_edit.textChanged.connect(
+            lambda _text, fp=field_path: self._sync_additional_servers(fp)
+        )
+        layout.addWidget(telemetry_port_edit)
 
         label_lbl = QLabel("Label:")
         label_lbl.setFont(QFont("Roboto", 9))
@@ -1288,6 +1302,7 @@ class SettingsWindow(QDialog):
         layout.addWidget(remove_btn)
 
         row.port_edit = port_edit
+        row.telemetry_port_edit = telemetry_port_edit
         row.label_edit = label_edit
         row.setLayout(layout)
 
@@ -1296,7 +1311,8 @@ class SettingsWindow(QDialog):
     def _on_add_server_entry(self, field_path: str, entries_layout: QVBoxLayout, empty_label: QLabel):
         """Add a new server entry with auto-suggested port."""
         suggested_port = self._suggest_next_port()
-        row = self._build_server_entry_row(suggested_port, "", field_path, entries_layout)
+        suggested_telemetry_port = self._suggest_next_telemetry_port()
+        row = self._build_server_entry_row(suggested_port, suggested_telemetry_port, "", field_path, entries_layout)
         entries_layout.addWidget(row)
         empty_label.setVisible(False)
         self._sync_additional_servers(field_path)
@@ -1342,7 +1358,15 @@ class SettingsWindow(QDialog):
             if port < 1024 or port > 65535:
                 continue
 
-            servers.append(AdditionalServer(port=port, label=label_text))
+            telemetry_port_text = row.telemetry_port_edit.text().strip()
+            try:
+                telemetry_port = int(telemetry_port_text)
+            except ValueError:
+                continue
+            if telemetry_port < 1024 or telemetry_port > 65535:
+                continue
+
+            servers.append(AdditionalServer(port=port, telemetry_port=telemetry_port, label=label_text))
 
         self._set_nested_value(self.working_settings, field_path, servers)
 
@@ -1354,10 +1378,30 @@ class SettingsWindow(QDialog):
             network.save_viewer_port,
             network.broker_xpub_port,
             network.broker_xsub_port,
+            network.telemetry_port,
         }
         for server in network.additional_servers:
             used_ports.add(server.port)
+            used_ports.add(server.telemetry_port)
         port = 4769
+        while port in used_ports and port <= 65535:
+            port += 1
+        return port
+
+    def _suggest_next_telemetry_port(self) -> int:
+        """Suggest the next free UDP telemetry port starting from 20778."""
+        network = self.working_settings.Network
+        used_ports = {
+            network.telemetry_port,
+            network.server_port,
+            network.save_viewer_port,
+            network.broker_xpub_port,
+            network.broker_xsub_port,
+        }
+        for server in network.additional_servers:
+            used_ports.add(server.telemetry_port)
+            used_ports.add(server.port)
+        port = 20778
         while port in used_ports and port <= 65535:
             port += 1
         return port
@@ -1373,7 +1417,7 @@ class SettingsWindow(QDialog):
                 item.widget().deleteLater()
 
         for server in servers:
-            row = self._build_server_entry_row(server.port, server.label, field_path, entries_layout)
+            row = self._build_server_entry_row(server.port, server.telemetry_port, server.label, field_path, entries_layout)
             entries_layout.addWidget(row)
 
         container.empty_label.setVisible(len(servers) == 0)

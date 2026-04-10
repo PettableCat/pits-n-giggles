@@ -118,6 +118,7 @@ class BaseWebServer:
 
         self._register_base_socketio_events()
         self._define_static_file_routes()
+        self._sid_port_map: Dict[str, int] = {}  # sid → port the client connected on
 
         # Automatically append version string to all static URL's
         # We're doing this because when version changes, we don't want the browser to load cached code
@@ -190,6 +191,10 @@ class BaseWebServer:
                 sid (str): Session ID of the connected client.
             """
             self.m_logger.debug("Client connected: %s", sid)
+            # Extract the port from the ASGI scope and store for later use
+            port = _environ.get('asgi.scope', {}).get('server', (None, None))[1]
+            if port is not None:
+                self._sid_port_map[sid] = port
 
         @self.m_sio.event
         async def disconnect(sid: str) -> None:
@@ -200,6 +205,7 @@ class BaseWebServer:
                 sid (str): Session ID of the disconnected client.
             """
             self.m_logger.debug("Client disconnected: %s", sid)
+            self._sid_port_map.pop(sid, None)
             if self._on_client_disconnect_callback:
                 await self._on_client_disconnect_callback(sid)
 
@@ -238,6 +244,15 @@ class BaseWebServer:
 
                         room = self.m_sio.manager.rooms.get('/', {}).get(event)
                         self.m_logger.debug('[CLIENT_REG] Current members of %s: %s', event, room)
+
+            # Port-specific rooms (additive — client stays in global rooms too)
+            conn_port = self._sid_port_map.get(sid)
+            if conn_port is not None and interested_events:
+                for event in interested_events:
+                    port_room = f"port:{conn_port}:{event}"
+                    await self.m_sio.enter_room(sid, port_room)
+                    if self.m_debug_mode:
+                        self.m_logger.debug('[CLIENT_REG] Client %s joined port room %s', sid, port_room)
 
     async def send_to_clients_of_type(self, event: str, data: Dict[str, Any], client_type: ClientType) -> None:
         """
@@ -295,6 +310,31 @@ class BaseWebServer:
             bool: True if any client is interested in the event
         """
         return not self._is_room_empty(event)
+
+    async def send_to_port_room(self, port: int, event: str, data: Dict[str, Any]) -> None:
+        """Send data only to clients connected on a specific port that are interested in an event.
+
+        Args:
+            port (int): The port the clients connected on.
+            event (str): The event name to emit.
+            data (Dict[str, Any]): The data to send with the event.
+        """
+        port_room = f"port:{port}:{event}"
+        packed = msgpack.packb(data, use_bin_type=True)
+        await self.m_sio.emit(event, packed, room=port_room)
+
+    def is_any_client_in_port_room(self, port: int, event: str) -> bool:
+        """Check if any client is in a port-specific room.
+
+        Args:
+            port (int): The port to check.
+            event (str): The event name to check.
+
+        Returns:
+            bool: True if any client is in the port-specific room.
+        """
+        port_room = f"port:{port}:{event}"
+        return not self._is_room_empty(port_room)
 
     def _is_room_empty(self, room_name: str, namespace: Optional[str] = '/') -> bool:
         """Check if a room is empty"""

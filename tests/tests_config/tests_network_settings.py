@@ -30,7 +30,7 @@ from pydantic import ValidationError
 # Add the parent directory to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from lib.config import NetworkSettings
+from lib.config import NetworkSettings, AdditionalServer
 
 from .tests_config_base import TestF1ConfigBase
 
@@ -259,3 +259,113 @@ class TestNetworkSettings(TestF1ConfigBase):
 
         with self.assertRaises(ValidationError):
             NetworkSettings(bind_address="")
+
+
+class TestAdditionalServer(TestF1ConfigBase):
+    """Test AdditionalServer model and multi-session port validation."""
+
+    def test_additional_server_requires_telemetry_port(self):
+        """telemetry_port is mandatory on AdditionalServer."""
+        with self.assertRaises(ValidationError):
+            AdditionalServer(port=4769, label="Driver 2")
+
+    def test_additional_server_valid(self):
+        """A valid AdditionalServer with all fields."""
+        srv = AdditionalServer(port=4769, telemetry_port=20778, label="Driver 2")
+        self.assertEqual(srv.port, 4769)
+        self.assertEqual(srv.telemetry_port, 20778)
+        self.assertEqual(srv.label, "Driver 2")
+
+    def test_additional_server_telemetry_port_range(self):
+        """telemetry_port must be within 1024-65535."""
+        with self.assertRaises(ValidationError):
+            AdditionalServer(port=4769, telemetry_port=0)
+        with self.assertRaises(ValidationError):
+            AdditionalServer(port=4769, telemetry_port=70000)
+
+        # Boundary values
+        srv = AdditionalServer(port=4769, telemetry_port=1024)
+        self.assertEqual(srv.telemetry_port, 1024)
+        srv = AdditionalServer(port=4769, telemetry_port=65535)
+        self.assertEqual(srv.telemetry_port, 65535)
+
+    def test_additional_server_default_label(self):
+        """Label defaults to empty string."""
+        srv = AdditionalServer(port=4769, telemetry_port=20778)
+        self.assertEqual(srv.label, "")
+
+    def test_additional_server_in_network_settings(self):
+        """AdditionalServer integrates into NetworkSettings without conflicts."""
+        settings = NetworkSettings(
+            additional_servers=[
+                AdditionalServer(port=4769, telemetry_port=20778, label="Driver 2"),
+            ]
+        )
+        self.assertEqual(len(settings.additional_servers), 1)
+        self.assertEqual(settings.additional_servers[0].telemetry_port, 20778)
+
+    def test_additional_server_http_port_conflict_with_primary(self):
+        """Additional HTTP port cannot collide with primary server_port."""
+        with self.assertRaises(ValidationError) as ctx:
+            NetworkSettings(
+                server_port=4768,
+                additional_servers=[
+                    AdditionalServer(port=4768, telemetry_port=20778),
+                ]
+            )
+        self.assertIn("Port conflict", str(ctx.exception))
+
+    def test_additional_server_telemetry_port_conflict_with_primary(self):
+        """Additional telemetry port cannot collide with primary telemetry_port."""
+        with self.assertRaises(ValidationError) as ctx:
+            NetworkSettings(
+                telemetry_port=20777,
+                additional_servers=[
+                    AdditionalServer(port=4769, telemetry_port=20777),
+                ]
+            )
+        self.assertIn("Port conflict", str(ctx.exception))
+
+    def test_additional_servers_mutual_http_conflict(self):
+        """Two additional servers cannot share the same HTTP port."""
+        with self.assertRaises(ValidationError) as ctx:
+            NetworkSettings(
+                additional_servers=[
+                    AdditionalServer(port=4769, telemetry_port=20778, label="A"),
+                    AdditionalServer(port=4769, telemetry_port=20779, label="B"),
+                ]
+            )
+        self.assertIn("Port conflict", str(ctx.exception))
+
+    def test_additional_servers_mutual_telemetry_conflict(self):
+        """Two additional servers cannot share the same telemetry port."""
+        with self.assertRaises(ValidationError) as ctx:
+            NetworkSettings(
+                additional_servers=[
+                    AdditionalServer(port=4769, telemetry_port=20778, label="A"),
+                    AdditionalServer(port=4770, telemetry_port=20778, label="B"),
+                ]
+            )
+        self.assertIn("Port conflict", str(ctx.exception))
+
+    def test_additional_server_udp_tcp_same_number_valid(self):
+        """UDP and TCP can share the same numeric port (different protocols)."""
+        # telemetry_port (UDP) same number as HTTP port (TCP) is valid
+        settings = NetworkSettings(
+            additional_servers=[
+                AdditionalServer(port=5000, telemetry_port=5000, label="Same number"),
+            ]
+        )
+        self.assertEqual(settings.additional_servers[0].port, 5000)
+        self.assertEqual(settings.additional_servers[0].telemetry_port, 5000)
+
+    def test_multiple_additional_servers_no_conflict(self):
+        """Multiple valid additional servers with distinct ports."""
+        settings = NetworkSettings(
+            additional_servers=[
+                AdditionalServer(port=4769, telemetry_port=20778, label="Driver 2"),
+                AdditionalServer(port=4770, telemetry_port=20779, label="Driver 3"),
+                AdditionalServer(port=4771, telemetry_port=20780, label="Driver 4"),
+            ]
+        )
+        self.assertEqual(len(settings.additional_servers), 3)
