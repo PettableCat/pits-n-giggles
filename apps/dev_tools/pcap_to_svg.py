@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import json
 import math
 import sys
 from pathlib import Path
@@ -126,7 +127,8 @@ def extract_track_points(pcap_path: str, min_lap: int = 2) -> List[TrackPoint]:
 
 
 def bin_and_average(
-    points: List[TrackPoint], num_bins: int = 800
+    points: List[TrackPoint], num_bins: int = 800,
+    track_length: Optional[float] = None,
 ) -> List[Tuple[float, float]]:
     """Bin points by lap distance and average world coordinates per bin.
 
@@ -136,7 +138,7 @@ def bin_and_average(
     if not points:
         return []
 
-    max_dist = max(p.lap_distance for p in points)
+    max_dist = track_length if track_length else max(p.lap_distance for p in points)
     bin_size = max_dist / num_bins
 
     # Accumulate sums per bin: {bin_idx: (sum_x, sum_z, count)}
@@ -242,11 +244,13 @@ def write_svg(
         print("Error: too few points for a polyline.", file=sys.stderr)
         sys.exit(1)
 
-    # Close the loop if endpoints aren't close enough
+    # Close the loop only if endpoints are already close together.
+    # A large gap means bins near the start/finish line have no data —
+    # closing would create a long diagonal artefact.
     dx = svg_points[-1][0] - svg_points[0][0]
     dy = svg_points[-1][1] - svg_points[0][1]
     gap = (dx * dx + dy * dy) ** 0.5
-    if gap > 5.0:
+    if gap < 30.0:
         svg_points.append(svg_points[0])
 
     coords = " ".join(f"{x},{y}" for x, y in svg_points)
@@ -296,6 +300,14 @@ def main() -> None:
         "--flip-y", action="store_true",
         help="Mirror track vertically"
     )
+    parser.add_argument(
+        "--track-length", type=float, default=None,
+        help="Track length in metres (uses max lapDistance if omitted)"
+    )
+    parser.add_argument(
+        "--dump-coords", action="store_true",
+        help="Export raw binned world coordinates as JSON (before rotation/flip)"
+    )
 
     args = parser.parse_args()
 
@@ -305,7 +317,7 @@ def main() -> None:
         sys.exit(1)
 
     # Output path: default to track-maps/ directory
-    svg_dir = Path(__file__).parent
+    svg_dir = Path(__file__).resolve().parents[2] / "assets" / "track-maps"
     if args.output:
         output_path = str(svg_dir / args.output)
     else:
@@ -322,7 +334,17 @@ def main() -> None:
         sys.exit(1)
 
     print(f"[2/4] Binning into {args.bins} segments...")
-    avg_points = bin_and_average(points, num_bins=args.bins)
+    avg_points = bin_and_average(points, num_bins=args.bins, track_length=args.track_length)
+
+    if args.dump_coords:
+        json_path = str(Path(output_path).with_suffix(".json"))
+        data = {
+            "track_name": Path(output_path).stem,
+            "num_bins": args.bins,
+            "points": [[round(x, 4), round(z, 4)] for x, z in avg_points],
+        }
+        Path(json_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        print(f"  Dumped {len(avg_points)} raw coords to {json_path}")
 
     if args.rotate:
         print(f"[2b]  Rotating {args.rotate}° CCW...")
