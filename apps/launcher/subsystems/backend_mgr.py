@@ -138,36 +138,72 @@ class BackendAppMgr(PngAppMgrBase):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Main icon button (same size as regular buttons)
+        # Main icon button — left side of the split, no right border-radius
         main_btn = QPushButton()
         main_btn.setIcon(icon)
         main_btn.setToolTip(tooltip)
         main_btn.setFixedSize(32, 32)
+        main_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3e3e3e;
+                border: 1px solid #4e4e4e;
+                border-top-left-radius: 6px;
+                border-bottom-left-radius: 6px;
+                border-top-right-radius: 0px;
+                border-bottom-right-radius: 0px;
+                border-right: none;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #0e639c;
+                border: 1px solid #1177bb;
+                border-right: none;
+            }
+            QPushButton:pressed { background-color: #0d5689; }
+            QPushButton:disabled {
+                background-color: #2d2d2d;
+                border-color: #2d2d2d;
+                opacity: 0.4;
+            }
+        """)
         main_btn.clicked.connect(default_action)
         layout.addWidget(main_btn)
 
-        # Arrow button that opens the dropdown menu
+        # Arrow button — right side of the split, no left border-radius
         arrow_btn = QPushButton("\u25BC")
-        arrow_btn.setFixedSize(16, 32)
+        arrow_btn.setFixedSize(18, 32)
         arrow_btn.setToolTip(f"{tooltip} (select port)")
         arrow_btn.setStyleSheet("""
             QPushButton {
                 font-size: 8px;
                 padding: 0px;
-                border: none;
-                background: transparent;
+                background-color: #3e3e3e;
+                border: 1px solid #4e4e4e;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
+                border-top-left-radius: 0px;
+                border-bottom-left-radius: 0px;
+                border-left: none;
                 color: #d4d4d4;
             }
             QPushButton:hover {
-                background: rgba(255, 255, 255, 0.1);
-                border-radius: 4px;
+                background-color: #0e639c;
+                border: 1px solid #1177bb;
+                border-left: none;
             }
+            QPushButton:pressed { background-color: #0d5689; }
+            QPushButton:disabled {
+                background-color: #2d2d2d;
+                border-color: #2d2d2d;
+                opacity: 0.4;
+            }
+            QPushButton::menu-indicator { image: none; width: 0px; }
         """)
         arrow_btn.setMenu(menu)
         layout.addWidget(arrow_btn)
 
         container.setLayout(layout)
-        container.setFixedSize(48, 32)
+        container.setFixedSize(50, 32)
 
         # Expose references so the rest of the code can enable/disable and swap icons
         container.main_btn = main_btn

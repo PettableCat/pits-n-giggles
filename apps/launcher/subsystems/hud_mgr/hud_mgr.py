@@ -33,7 +33,10 @@ from pydantic import ValidationError
 from PySide6.QtWidgets import QPushButton
 
 from lib.button_debouncer import ButtonDebouncer
-from lib.config import (HudSettings, OverlayPosition, PngSettings)
+from lib.config import (HudSettings, OverlayPosition, PngSettings,
+                        LAP_TIMER_OVERLAY_ID, TIMING_TOWER_OVERLAY_ID,
+                        MFD_OVERLAY_ID, TRACK_MAP_OVERLAY_ID,
+                        INPUT_TELEMETRY_OVERLAY_ID, TRACK_RADAR_OVERLAY_ID)
 from lib.ipc import IpcClientSync
 
 from ..base_mgr import PngAppMgrBase, PngAppMgrConfig
