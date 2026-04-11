@@ -43,7 +43,6 @@ class PeriodicUpdateData(BaseAPI):
 
         self.m_session_info = session_state.m_session_info
         self.m_wdt_status = session_state.m_connected_to_sim
-        # TODO: evaluate if this is needed
         self.m_track_length = self.m_session_info.m_packet_session.m_trackLength if self.m_session_info.m_packet_session else None
         self.m_driver_list_rsp = DriversListRsp(
             session_state=session_state,

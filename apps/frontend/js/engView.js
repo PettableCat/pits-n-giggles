@@ -26,20 +26,21 @@ const RESPONSIVE_COLUMN_PRESETS = {
         'speed-trap',
         'tyre-compound',
         'front-left-wear', 'front-right-wear', 'rear-left-wear', 'rear-right-wear',
-        'front-left-temp', 'front-right-temp', 'rear-left-temp', 'rear-right-temp',
+        'tyre-inner-fl', 'tyre-inner-fr', 'tyre-inner-rl', 'tyre-inner-rr',
         'fuel-in-tank',
     ],
     tablet: [
         'position', 'name', 'delta',
         'last-lap-time',
-        'tyre-compound', 'tyre-wear-agg', 'tyre-temp-agg',
+        'tyre-compound', 'tyre-wear-agg',
+        'tyre-inner-fl', 'tyre-inner-fr', 'tyre-inner-rl', 'tyre-inner-rr',
         'fuel-in-tank',
     ],
     compact: [
         'position', 'name', 'delta',
         'last-lap-time',
         'tyre-compound',
-        'tyre-temp-agg',
+        'tyre-inner-fl', 'tyre-inner-fr', 'tyre-inner-rl', 'tyre-inner-rr',
     ],
 };
 
@@ -124,7 +125,6 @@ class EngViewRaceTable {
         this.COLUMN_ACTIVE_PROFILE_LS_KEY = 'eng-view-table-active-profile';
         this.DEFAULT_PROFILE_ID = '__default__';
         this.TELEMETRY_DISABLED_TEXT = "⌀";
-        this.tyreTempMode = 0; // 0 = Surface Only, 1 = Surface & Carcass
         this.delayedLapData = new Map(); // Stores { oldLapData, timestamp } for each driver
         this.previousTableData = []; // Stores the data from the previous update cycle
         this.refDriverTeam = null; // Team of the reference driver (player or spectated)
@@ -291,6 +291,8 @@ class EngViewRaceTable {
         const isDefault = this.columnProfileSelect.value === this.DEFAULT_PROFILE_ID;
         this.deleteProfileBtn.disabled = isDefault;
         this.renameProfileBtn.disabled = isDefault;
+    }
+
     getCurrentBreakpoint() {
         const width = window.innerWidth;
         if (width >= 1440) return 'desktop';
@@ -375,7 +377,6 @@ class EngViewRaceTable {
                     const breakpoint = this.getCurrentBreakpoint();
                     this.applyBreakpointPreset(breakpoint);
                     console.debug('Applied breakpoint preset:', breakpoint);
-                }
                 }
 
                 // Add event listeners for column state changes
@@ -539,7 +540,14 @@ class EngViewRaceTable {
             }
             const temps = driverInfo["tyre-info"][section];
             const val = temps?.[wheel];
-            return this.createSingleLineCell(val != null ? `${val}°` : "N/A");
+            if (val == null) return this.createSingleLineCell("N/A");
+            if (section === "inner-temps") {
+                const compound = driverInfo["tyre-info"]["actual-tyre-compound"] ?? "";
+                const th = TYRE_TEMP_THRESHOLDS[compound] ?? TYRE_TEMP_THRESHOLDS_DEFAULT;
+                const tempClass = this.#getTyreTempClass(val, th);
+                return this.createSingleLineCell(`${val}°`, { escape: false, className: tempClass });
+            }
+            return this.createSingleLineCell(`${val}°`);
         };
     }
 
@@ -564,80 +572,6 @@ class EngViewRaceTable {
             } else {
                 return this.getTelemetryRestrictedContent();
             }
-        };
-    }
-
-    createTyreTempCellRenderer(tempField) {
-        return (params) => {
-            const driverInfo = params.data;
-            const telemetryPublic = driverInfo["driver-info"]["telemetry-setting"] === "Public";
-            if (!telemetryPublic) {
-                return this.getTelemetryRestrictedContent();
-            }
-            const tyreInfo = driverInfo["tyre-info"];
-            // tyre-temp-mode: 0 = Surface Only, 1 = Surface & Carcass
-            const useInner = this.tyreTempMode === 1;
-            const tyreTemps = useInner ? tyreInfo["tyre-inner-temps"] : tyreInfo["tyre-surface-temps"];
-            if (!tyreTemps) {
-                return this.createSingleLineCell("N/A");
-            }
-            const temp = tyreTemps[tempField];
-            if (temp == null) {
-                return this.createSingleLineCell("N/A");
-            }
-            const compound = tyreInfo["actual-tyre-compound"] ?? "";
-            const th = TYRE_TEMP_THRESHOLDS[compound] ?? TYRE_TEMP_THRESHOLDS_DEFAULT;
-            const tempClass = this.#getTyreTempClass(temp, th);
-            return this.createSingleLineCell(`${temp}°C`, { escape: false, className: tempClass });
-        };
-    }
-
-    createAggregatedTyreTempCellRenderer() {
-        return (params) => {
-            const driverInfo = params.data;
-            const telemetryPublic = driverInfo["driver-info"]["telemetry-setting"] === "Public";
-            if (!telemetryPublic) {
-                return this.getTelemetryRestrictedContent();
-            }
-            const tyreInfo = driverInfo["tyre-info"];
-            // tyre-temp-mode: 0 = Surface Only, 1 = Surface & Carcass
-            const hasInner = this.tyreTempMode === 1;
-            const tyreTemps = hasInner ? tyreInfo["tyre-inner-temps"] : tyreInfo["tyre-surface-temps"];
-            if (!tyreTemps) {
-                return this.createSingleLineCell("N/A");
-            }
-            const allTemps = [
-                tyreTemps["front-left-temp"],
-                tyreTemps["front-right-temp"],
-                tyreTemps["rear-left-temp"],
-                tyreTemps["rear-right-temp"],
-            ];
-            if (allTemps.some(t => t == null)) {
-                return this.createSingleLineCell("N/A");
-            }
-            const compound = tyreInfo["actual-tyre-compound"] ?? "";
-            const th = TYRE_TEMP_THRESHOLDS[compound] ?? TYRE_TEMP_THRESHOLDS_DEFAULT;
-
-            const getSeverity = (temp) => {
-                if (temp > th.max)         return 4;
-                if (temp > th.optimal + 5) return 3;
-                if (temp < th.min)         return 2;
-                if (temp < th.optimal - 5) return 1;
-                return                            0;
-            };
-
-            let worstSeverity = -1;
-            let worstTemp = null;
-            for (const temp of allTemps) {
-                const s = getSeverity(temp);
-                if (s > worstSeverity || (s === worstSeverity && temp > worstTemp)) {
-                    worstSeverity = s;
-                    worstTemp = temp;
-                }
-            }
-
-            const tempClass = this.#getTyreTempClass(worstTemp, th);
-            return this.createSingleLineCell(`${worstTemp}°C`, { escape: false, className: tempClass });
         };
     }
 
@@ -1157,75 +1091,6 @@ class EngViewRaceTable {
                 ],
             },
             {
-                headerName: 'Tyre Temp',
-                colId: 'tyre-temp',
-                context: {displayName: 'Tyre Temp', },
-                children: [
-                    {
-                        headerName: "FL",
-                        colId: "front-left-temp",
-                        context: {displayName: "Front Left Temp", },
-                        field: "tyre-info.tyre-surface-temps.front-left-temp",
-                        flex: 2,
-                        cellRenderer: this.createTyreTempCellRenderer("front-left-temp"),
-                        sortable: false,
-                        cellClass: 'ag-cell-single-line',
-                    },
-                    {
-                        headerName: "FR",
-                        colId: "front-right-temp",
-                        context: {displayName: "Front Right Temp", },
-                        field: "tyre-info.tyre-surface-temps.front-right-temp",
-                        flex: 2,
-                        cellRenderer: this.createTyreTempCellRenderer("front-right-temp"),
-                        sortable: false,
-                        cellClass: 'ag-cell-single-line',
-                    },
-                    {
-                        headerName: "RL",
-                        colId: "rear-left-temp",
-                        context: {displayName: "Rear Left Temp", },
-                        field: "tyre-info.tyre-surface-temps.rear-left-temp",
-                        flex: 2,
-                        cellRenderer: this.createTyreTempCellRenderer("rear-left-temp"),
-                        sortable: false,
-                        cellClass: 'ag-cell-single-line',
-                    },
-                    {
-                        headerName: "RR",
-                        colId: "rear-right-temp",
-                        context: {displayName: "Rear Right Temp", },
-                        field: "tyre-info.tyre-surface-temps.rear-right-temp",
-                        flex: 2,
-                        cellRenderer: this.createTyreTempCellRenderer("rear-right-temp"),
-                        sortable: false,
-                        cellClass: 'ag-cell-single-line',
-                    },
-                    {
-                        headerName: "Temp",
-                        colId: "tyre-temp-agg",
-                        context: { displayName: "Tyre Temp (Worst)" },
-                        field: "tyre-info",
-                        flex: 2,
-                        hide: true,
-                        cellRenderer: this.createAggregatedTyreTempCellRenderer(),
-                        sortable: false,
-                        cellClass: 'ag-cell-single-line',
-                        equals: (val1, val2) => {
-                            if (!val1 || !val2) return val1 === val2;
-                            const temps1 = val1["tyre-inner-temps"] ?? val1["tyre-surface-temps"];
-                            const temps2 = val2["tyre-inner-temps"] ?? val2["tyre-surface-temps"];
-                            if (!temps1 || !temps2) return temps1 === temps2;
-                            return temps1["front-left-temp"] === temps2["front-left-temp"]
-                                && temps1["front-right-temp"] === temps2["front-right-temp"]
-                                && temps1["rear-left-temp"] === temps2["rear-left-temp"]
-                                && temps1["rear-right-temp"] === temps2["rear-right-temp"]
-                                && val1["actual-tyre-compound"] === val2["actual-tyre-compound"];
-                        },
-                    },
-                ],
-            },
-            {
                 headerName: 'Surf T',
                 colId: 'tyre-surf-temps',
                 context: {displayName: 'Tyre Surface Temps'},
@@ -1678,7 +1543,7 @@ class EngViewRaceTable {
             this.populateProfileSelect();
         });
 
-        this.autoFitColumnsButton.addEventListener('click', () => {
+        this.autoFitColumnsButton?.addEventListener('click', () => {
             if (this.gridApi) {
                 this.gridApi.autoSizeAllColumns();
             }
@@ -1760,26 +1625,26 @@ class EngViewRaceTable {
                 const checked = event.target.checked;
                 let hasChanged = false;
 
+                // Collect all colIds to toggle (leaf column + children)
+                const colIdsToToggle = [];
                 if (column) {
-                    column.setVisible(checked);
-                    hasChanged = true;
+                    colIdsToToggle.push(colId);
                 }
-
                 if (colDef.children) {
                     colDef.children.forEach(childColDef => {
                         const childColId = childColDef.colId;
-                        if (childColId) {
-                            const childColumn = this.gridApi.getColumn(childColId);
-                            if (childColumn) {
-                                childColumn.setVisible(checked);
-                                hasChanged = true;
-                            }
+                        if (childColId && this.gridApi.getColumn(childColId)) {
+                            colIdsToToggle.push(childColId);
                             const childInput = document.getElementById(`toggle-${childColId}`);
                             if (childInput) {
                                 childInput.checked = checked;
                             }
                         }
                     });
+                }
+                if (colIdsToToggle.length > 0) {
+                    this.gridApi.setColumnsVisible(colIdsToToggle, checked);
+                    hasChanged = true;
                 }
                 if (hasChanged) {
                     const savedColumnState = this.saveColumnState();
@@ -2400,8 +2265,6 @@ function initDashboard() {
             "session-uid" : sessionUID,
             "pit-time-loss": pitTimeLoss = null // Default to null
         } = data;
-
-        raceTable.tyreTempMode = data["tyre-temp-mode"] ?? 0;
 
         if (tableEntries || eventType === "Time Trial") {
             raceTable.update(tableEntries, isSpectating, eventType, spectatorCarIndex, fastestLapMs, sessionUID, pitTimeLoss);

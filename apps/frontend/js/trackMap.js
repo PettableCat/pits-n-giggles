@@ -161,7 +161,9 @@ class TrackMap {
      */
     async loadTrack(circuitName, gameYear) {
         if (circuitName === this.currentCircuit || circuitName === '---') return;
-        this.currentCircuit = circuitName;
+
+        // F1 packet header sends last two digits (e.g. 25 for 2025)
+        if (gameYear && gameYear < 100) gameYear += 2000;
 
         // Reload transforms if game year changed or not yet loaded
         if (!this._transforms || this._gameYear !== gameYear) {
@@ -186,6 +188,8 @@ class TrackMap {
                 img.src = `/track-maps/f1_${gameYear}/` + encodeURIComponent(tfKey + '.svg');
             });
 
+            // Only mark circuit as loaded after successful SVG load
+            this.currentCircuit = circuitName;
             this._setupTrackView(img);
             this._startRenderLoop();
         } catch (err) {
