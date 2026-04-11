@@ -34,23 +34,26 @@
             overflow: hidden;
         }
 
-        .track-map-svg {
-            max-width: 95vw;
-            max-height: 95vh;
-            width: auto;
-            height: auto;
-            transform-origin: 0 0;
+        .track-map-wrapper {
+            position: relative;
+            width: min(95vw, calc(95vh * 5 / 3));
+            aspect-ratio: 5 / 3;
+            transform-origin: center center;
             will-change: transform;
         }
 
-        .track-map-driver-dot {
-            transition: cx 0.4s ease, cy 0.4s ease;
-            cursor: pointer;
+        .track-map-svg {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
         }
 
-        .track-map-hit-area {
-            pointer-events: all;
-            transition: cx 0.4s ease, cy 0.4s ease;
+        .track-map-canvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
         }
 
         .track-map-tooltip {
@@ -176,11 +179,12 @@
                     "table-entries": tableEntries,
                     "is-spectating": isSpectating,
                     "spectator-car-index": spectatorCarIndex,
+                    "f1-game-year": gameYear,
                     circuit,
                 } = data;
 
-                if (circuit) {
-                    trackMap.loadTrack(circuit);
+                if (circuit && gameYear) {
+                    trackMap.loadTrack(circuit, gameYear);
                     label.textContent = circuit.replace(/_/g, ' ');
                 }
 

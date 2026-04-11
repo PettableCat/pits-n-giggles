@@ -9,6 +9,7 @@ Integration:
     call generate_if_ready() periodically.
 """
 
+import json
 import math
 from logging import Logger
 from pathlib import Path
@@ -34,6 +35,7 @@ class TrackMapCollector:
         "_points",       # list of (lap_distance, world_x, world_z)
         "_track_name",   # TrackID.name for the SVG filename
         "_track_len",    # track length in metres
+        "_game_year",    # packet format year (2023, 2024, 2025) for subfolder
         "_generated",    # True once SVG was written for this session
         "_target_dir",   # Path to assets/track-maps/
         "_logger",
@@ -52,6 +54,7 @@ class TrackMapCollector:
         self._points: List[Tuple[float, float, float]] = []
         self._track_name: Optional[str] = None
         self._track_len: Optional[float] = None
+        self._game_year: Optional[int] = None
         self._generated = False
         self._last_motion: List[Tuple[float, float]] = []
 
@@ -59,13 +62,14 @@ class TrackMapCollector:
     def is_generated(self) -> bool:
         return self._generated
 
-    def set_track(self, track_name: str, track_length: float) -> None:
+    def set_track(self, track_name: str, track_length: float, game_year: int) -> None:
         """Set the current track identity. Called when session data arrives."""
-        if self._track_name != track_name:
-            self._logger.info("TrackMapCollector: track set to %s (%.0fm)", track_name, track_length)
+        if self._track_name != track_name or self._game_year != game_year:
+            self._logger.info("TrackMapCollector: track set to %s (%.0fm, F1 %d)", track_name, track_length, game_year)
             self.reset()
             self._track_name = track_name
             self._track_len = track_length
+            self._game_year = game_year
 
     def on_motion(self, car_motion_data: list) -> None:
         """Buffer world positions from a PacketMotionData.
@@ -120,8 +124,7 @@ class TrackMapCollector:
         if self._generated or not self._track_name or not self._track_len:
             return None
 
-        # Need at least some coverage before generating.
-        # Heuristic: enough points to fill 90% of bins.
+        # Need 100% bin coverage before generating.
         if len(self._points) < _NUM_BINS:
             return None
 
@@ -133,7 +136,7 @@ class TrackMapCollector:
             filled_bins.add(b)
 
         coverage = len(filled_bins) / _NUM_BINS
-        if coverage < 0.90:
+        if coverage < 1.0:
             return None
 
         # Generate
@@ -142,14 +145,30 @@ class TrackMapCollector:
             self._track_name, len(self._points), coverage * 100
         )
 
-        avg_points = _bin_and_average(self._points, _NUM_BINS)
+        avg_points = _bin_and_average(self._points, _NUM_BINS, self._track_len)
+
+        # Output directory: assets/track-maps/f1_{game_year}/
+        game_dir = self._target_dir / f"f1_{self._game_year}"
+        game_dir.mkdir(parents=True, exist_ok=True)
+
+        # Dump raw coords (pre-rotation) for calibration
+        json_path = game_dir / f"{self._track_name}.json"
+        data = {
+            "track_name": self._track_name,
+            "game_year": self._game_year,
+            "num_bins": _NUM_BINS,
+            "points": [[round(x, 4), round(z, 4)] for x, z in avg_points],
+        }
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        self._logger.info("TrackMapCollector: wrote %s (%d raw coords)", json_path, len(avg_points))
+
         avg_points = _rotate_points(avg_points, _ROTATE_DEG)
         if _FLIP_X:
             avg_points = _flip_x(avg_points)
         svg_points = _world_to_svg(avg_points, _SVG_WIDTH, _SVG_HEIGHT, _SVG_PADDING)
 
         svg_filename = f"{self._track_name}.svg"
-        output_path = self._target_dir / svg_filename
+        output_path = game_dir / svg_filename
         _write_svg(svg_points, str(output_path), _SVG_WIDTH, _SVG_HEIGHT)
 
         self._generated = True
@@ -162,13 +181,14 @@ class TrackMapCollector:
 # ---------------------------------------------------------------------------
 
 def _bin_and_average(
-    points: List[Tuple[float, float, float]], num_bins: int
+    points: List[Tuple[float, float, float]], num_bins: int,
+    track_length: Optional[float] = None,
 ) -> List[Tuple[float, float]]:
     """Bin (lapDist, x, z) triples by distance and average world coords per bin."""
     if not points:
         return []
 
-    max_dist = max(p[0] for p in points)
+    max_dist = track_length if track_length else max(p[0] for p in points)
     bin_size = max_dist / num_bins
 
     bins: Dict[int, List[float]] = {}
@@ -247,11 +267,13 @@ def _write_svg(
     width: int, height: int,
 ) -> None:
     """Write SVG file in the project's standard polyline format."""
-    # Close the loop if endpoints aren't close enough
+    # Close the loop only if endpoints are already close together.
+    # A large gap means bins near the start/finish line have no data —
+    # closing would create a long diagonal artefact.
     if len(svg_points) >= 2:
         dx = svg_points[-1][0] - svg_points[0][0]
         dy = svg_points[-1][1] - svg_points[0][1]
-        if (dx * dx + dy * dy) ** 0.5 > 5.0:
+        if (dx * dx + dy * dy) ** 0.5 < 30.0:
             svg_points.append(svg_points[0])
 
     coords = " ".join(f"{x},{y}" for x, y in svg_points)

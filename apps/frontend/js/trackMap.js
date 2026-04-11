@@ -1,20 +1,28 @@
 /**
- * TrackMap — renders driver positions on an SVG track map.
+ * TrackMap — renders driver positions on an SVG + Canvas hybrid track map.
  *
- * Uses lap-progress (0–100%) interpolated onto the SVG polyline to place
- * each driver as a colored circle. Player gets a gold outline, teammate
- * silver, everyone else just their team color.
+ * Uses SVG track outlines as sharp, infinitely-scalable backgrounds with a
+ * transparent Canvas overlay for driver dots. World-coordinate transforms use
+ * 6 affine coefficients from svg_transforms.json.
  *
- * For reverse circuits the polyline points are reversed so that
- * lap-progress still maps correctly (0% = start of reverse layout).
+ * Container structure:
+ *   #trackMapContainer (position: relative, overflow: hidden)
+ *     .track-map-wrapper (CSS transform for zoom/pan)
+ *       <img class="track-map-svg"> (SVG source, sharp at any zoom)
+ *       <canvas class="track-map-canvas"> (driver dots overlay)
+ *     .track-map-zoom-reset button
+ *
+ * The world->SVG pixel transform is:
+ *   svgX = a * worldX + b * worldZ + c
+ *   svgY = d * worldX + e * worldZ + f
  */
 
 // Mapping from the circuit string delivered by the backend (TrackID.__str__)
-// to the SVG filename stem in assets/track-maps/.
-// null → no SVG available for this circuit.
-const CIRCUIT_TO_SVG = {
+// to the key in svg_transforms.json (and SVG filename stem).
+// null -> no track map available for this circuit.
+const CIRCUIT_TO_TRANSFORM = {
     "Melbourne":            "Melbourne",
-    "Paul Ricard":          "Paul_Ricard",
+    "Paul Ricard":          null,
     "Shanghai":             "Shanghai",
     "Sakhir":               "Sakhir_Bahrain",
     "Catalunya":            "Catalunya",
@@ -46,35 +54,52 @@ const CIRCUIT_TO_SVG = {
     "Miami":                "Miami",
     "Las Vegas":            "Las_Vegas",
     "Losail":               "Losail",
-    // Reverse layouts — reuse the base track SVG, polyline gets reversed
-    "Silverstone_Reverse":  "Silverstone",
-    "Austria_Reverse":      "Austria",
-    "Zandvoort_Reverse":    "Zandvoort",
+    // Reverse layouts
+    "Silverstone_Reverse":  "Silverstone_Reverse",
+    "Austria_Reverse":      "Austria_Reverse",
+    "Zandvoort_Reverse":    "Zandvoort_Reverse",
 };
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
+// SVG internal coordinate space (all SVGs are 1000x600)
+const SVG_W = 1000;
+const SVG_H = 600;
+
+// Driver dot radii (in SVG-pixel space)
+const DOT_RADIUS      = 10;
+const DOT_RADIUS_REF  = 12;
+const HIT_RADIUS      = 22;
+
+// Smooth interpolation factor per frame (0-1, higher = snappier)
+const LERP_FACTOR = 0.25;
 
 class TrackMap {
 
     constructor(containerSelector) {
         this.container = document.querySelector(containerSelector || '#trackMapContainer');
         this.headerElement = document.getElementById('trackMapHeader');
-        this.svgElement = null;
-        this.polylinePoints = [];
-        this.segmentLengths = [];
-        this.totalLength = 0;
+        this._wrapper = null;
+        this._svgImg = null;
+        this.canvas = null;
+        this.ctx = null;
         this.currentCircuit = null;
-        this.driverDots = new Map(); // index → <circle>
-        this.isReverse = false;
+
+        // Track transform parameters (from JSON) — per game year
+        this._transforms = null;  // full JSON object for current game year
+        this._currentTf = null;   // active transform for current circuit
+        this._gameYear = null;    // currently loaded game year
+
+        // Driver state: Map<driverIndex, {targetX, targetY, currentX, currentY, ...data}>
+        this._drivers = new Map();
+        this._activeDriverIds = new Set();
 
         this._createTooltip();
         this._activeTooltipDot = null;
 
-        // ── Pinned popup state ──
+        // -- Pinned popup state --
         this._pinnedDriver = null;
         this._createPinnedPopup();
 
-        // ── Zoom/Pan state ──
+        // -- Zoom/Pan state --
         this._zoom = 1;
         this._panX = 0;
         this._panY = 0;
@@ -92,45 +117,80 @@ class TrackMap {
 
         this._initZoomControls();
 
+        // rAF loop
+        this._rafId = null;
+        this._boundRenderLoop = this._renderLoop.bind(this);
+
         // Dismiss tooltip when tapping outside a driver dot (touch devices)
         document.addEventListener('touchstart', (e) => {
             if (this._activeTooltipDot &&
-                !e.target.classList.contains('track-map-driver-dot') &&
-                !e.target.classList.contains('track-map-hit-area')) {
+                !this._isDriverHit(e.touches[0].clientX, e.touches[0].clientY)) {
                 this._hideTooltip();
             }
         });
+
+        // Load transforms at construction time
     }
 
-    // ── public API ──────────────────────────────────────────────────
+    // -- Transform loading -----------------------------------------------
+
+    async _loadTransforms(gameYear) {
+        if (!gameYear) return;
+        try {
+            const resp = await fetch(`/track-maps/f1_${gameYear}/svg_transforms.json`);
+            if (!resp.ok) {
+                console.error(`Failed to load svg_transforms.json for F1 ${gameYear}:`, resp.status);
+                return;
+            }
+            this._transforms = await resp.json();
+            this._gameYear = gameYear;
+        } catch (err) {
+            console.error(`Failed to fetch svg_transforms.json for F1 ${gameYear}:`, err);
+        }
+    }
+
+    // -- public API -------------------------------------------------------
 
     /**
-     * Load the track SVG for the given circuit name.
+     * Load the SVG track outline for the given circuit name.
+     * Creates wrapper with SVG <img> + Canvas overlay.
      * Skips reload if the circuit hasn't changed.
+     *
+     * @param {string} circuitName  - circuit identifier from backend
+     * @param {number} gameYear     - F1 game year (2023, 2024, 2025)
      */
-    async loadTrack(circuitName) {
+    async loadTrack(circuitName, gameYear) {
         if (circuitName === this.currentCircuit || circuitName === '---') return;
         this.currentCircuit = circuitName;
 
-        this.isReverse = circuitName.endsWith('_Reverse');
-        const svgStem = CIRCUIT_TO_SVG[circuitName] ?? null;
+        // Reload transforms if game year changed or not yet loaded
+        if (!this._transforms || this._gameYear !== gameYear) {
+            await this._loadTransforms(gameYear);
+        }
 
-        if (!svgStem) {
+        const tfKey = CIRCUIT_TO_TRANSFORM[circuitName] ?? null;
+        if (!tfKey || !this._transforms || !this._transforms[tfKey]) {
             this._showFallback('No track map available');
             return;
         }
 
+        this._currentTf = this._transforms[tfKey];
+
         try {
-            const response = await fetch(`/track-maps/${encodeURIComponent(svgStem)}.svg`);
-            if (!response.ok) {
-                this._showFallback('Track map not found');
-                return;
-            }
-            const svgText = await response.text();
-            this._injectSVG(svgText);
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+
+            await new Promise((resolve, reject) => {
+                img.onload = resolve;
+                img.onerror = () => reject(new Error('SVG load failed'));
+                img.src = `/track-maps/f1_${gameYear}/` + encodeURIComponent(tfKey + '.svg');
+            });
+
+            this._setupTrackView(img);
+            this._startRenderLoop();
         } catch (err) {
-            console.error('Failed to load track map:', err);
-            this._showFallback('Failed to load track map');
+            console.error('Failed to load track SVG:', err);
+            this._showFallback('Track map not found');
         }
     }
 
@@ -143,97 +203,86 @@ class TrackMap {
      * @param {string}  refDriverTeam  - team name of the reference driver (for teammate detection)
      */
     updateDrivers(tableEntries, isSpectating, spectatorIndex, refDriverTeam) {
-        if (!this.svgElement || this.polylinePoints.length === 0) return;
+        if (!this.canvas || !this._currentTf) return;
 
-        const activeIds = new Set();
+        this._activeDriverIds.clear();
 
         for (const entry of tableEntries) {
             const driverInfo = entry['driver-info'];
             const lapInfo    = entry['lap-info'];
             const ersInfo    = entry['ers-info'];
             const tyreInfo   = entry['tyre-info'];
+            const worldPos   = entry['world-pos'];
 
             const index    = driverInfo['index'];
-            const progress = lapInfo['lap-progress'] ?? 0;
             const name     = driverInfo['name'];
             const team     = driverInfo['team'];
             const isPlayer = driverInfo['is-player'];
 
-            activeIds.add(index);
+            this._activeDriverIds.add(index);
 
-            const pos = this._getPositionAtProgress(progress);
+            // Skip if no world position yet
+            if (!worldPos) continue;
 
-            // Get or create the driver circle
-            let dot = this.driverDots.get(index);
-            if (!dot) {
-                dot = this._createDriverDot();
-                this.driverDots.set(index, dot);
+            const [worldX, worldZ] = worldPos;
+            const { px, py } = this._worldToPixel(worldX, worldZ);
+
+            // Get or create driver state
+            let driverState = this._drivers.get(index);
+            if (!driverState) {
+                driverState = {
+                    currentX: px, currentY: py,
+                    targetX: px, targetY: py,
+                    data: {},
+                };
+                this._drivers.set(index, driverState);
             }
 
-            // Position (CSS transitions on cx/cy give smooth movement)
-            dot.setAttribute('cx', pos.x);
-            dot.setAttribute('cy', pos.y);
-            if (dot._hitArea) {
-                dot._hitArea.setAttribute('cx', pos.x);
-                dot._hitArea.setAttribute('cy', pos.y);
-            }
+            // Update target position
+            driverState.targetX = px;
+            driverState.targetY = py;
 
-            // Team color fill
-            dot.setAttribute('fill', getF1TeamColor(team));
-
-            // Highlight: gold for player/spectated, silver for teammate
+            // Determine visual properties
             const isRef = isPlayer || (isSpectating && index === spectatorIndex);
             const isTeammate = !isRef && team === refDriverTeam && team !== 'F1 Generic';
 
-            if (isRef) {
-                dot.setAttribute('stroke', '#FFD700');
-                dot.setAttribute('stroke-width', '3');
-            } else if (isTeammate) {
-                dot.setAttribute('stroke', '#C0C0C0');
-                dot.setAttribute('stroke-width', '2');
-            } else {
-                dot.setAttribute('stroke', 'none');
-                dot.setAttribute('stroke-width', '0');
-            }
-
-            // Data attributes for hover tooltip & pinned popup
-            dot.dataset.driverName   = name;
-            dot.dataset.driverTeam   = team;
-            dot.dataset.driverIndex  = index;
-            dot.dataset.position     = driverInfo['position'];
-            dot.dataset.tyreCompound = tyreInfo?.['visual-tyre-compound'] ?? 'N/A';
-            dot.dataset.ersPercent   = (typeof ersInfo?.['ers-percent-float'] === 'number')
-                                        ? ersInfo['ers-percent-float'].toFixed(1) : 'N/A';
-            dot.dataset.ersMode      = ersInfo?.['ers-mode'] ?? 'N/A';
-            dot.dataset.tyreWearAvg  = this._avgTyreWear(tyreInfo?.['current-wear']);
+            driverState.data = {
+                name, team, index, isRef, isTeammate,
+                position:     driverInfo['position'],
+                tyreCompound: tyreInfo?.['visual-tyre-compound'] ?? 'N/A',
+                ersPercent:   (typeof ersInfo?.['ers-percent-float'] === 'number')
+                                ? ersInfo['ers-percent-float'].toFixed(1) : 'N/A',
+                ersMode:      ersInfo?.['ers-mode'] ?? 'N/A',
+                tyreWearAvg:  this._avgTyreWear(tyreInfo?.['current-wear']),
+                teamColor:    getF1TeamColor(team),
+            };
 
             // Update pinned popup content if this driver is pinned
-            // (position is handled by rAF tracking loop)
             if (this._pinnedDriver === index) {
-                this._updatePinnedPopupContent(dot);
+                this._updatePinnedPopupContent(driverState.data);
             }
         }
 
-        // Remove stale dots (driver retired / left session)
-        this.driverDots.forEach((dot, id) => {
-            if (!activeIds.has(id)) {
+        // Remove stale drivers
+        for (const [id] of this._drivers) {
+            if (!this._activeDriverIds.has(id)) {
                 if (this._pinnedDriver === id) this._unpinPopup();
-                if (dot._hitArea) dot._hitArea.remove();
-                dot.remove();
-                this.driverDots.delete(id);
+                this._drivers.delete(id);
             }
-        });
+        }
     }
 
     /** Reset internal state (e.g. on session change). */
     clear() {
+        this._stopRenderLoop();
         this.container.innerHTML = '';
-        this.svgElement = null;
-        this.polylinePoints = [];
-        this.segmentLengths = [];
-        this.totalLength = 0;
+        this._wrapper = null;
+        this._svgImg = null;
+        this.canvas = null;
+        this.ctx = null;
+        this._currentTf = null;
         this.currentCircuit = null;
-        this.driverDots.clear();
+        this._drivers.clear();
         this._activeTooltipDot = null;
         this._unpinPopup();
         this._resetZoomState();
@@ -241,142 +290,199 @@ class TrackMap {
         this.container.appendChild(this._resetBtn);
     }
 
-    // ── SVG parsing ─────────────────────────────────────────────────
+    // -- Track view setup -------------------------------------------------
 
-    _injectSVG(svgText) {
+    _setupTrackView(svgImg) {
+        // Clear previous content
         this.container.innerHTML = '';
-        this.driverDots.clear();
+        this._drivers.clear();
         this._resetZoomState();
 
-        const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
-        this.svgElement = doc.querySelector('svg');
-        if (!this.svgElement) {
-            this._showFallback('Invalid SVG');
-            return;
-        }
+        // Create wrapper (receives zoom/pan CSS transform)
+        this._wrapper = document.createElement('div');
+        this._wrapper.className = 'track-map-wrapper';
 
-        // Make the SVG scale to fit its container while preserving aspect ratio
-        const origW = this.svgElement.getAttribute('width')  || '1000';
-        const origH = this.svgElement.getAttribute('height') || '600';
-        this.svgElement.setAttribute('viewBox', `0 0 ${origW} ${origH}`);
-        this.svgElement.removeAttribute('width');
-        this.svgElement.removeAttribute('height');
-        this.svgElement.classList.add('track-map-svg');
+        // SVG image (background — sharp at any zoom level)
+        this._svgImg = svgImg;
+        this._svgImg.className = 'track-map-svg';
+        this._svgImg.draggable = false;
 
-        this.container.appendChild(this.svgElement);
+        // Canvas overlay (driver dots only, transparent background)
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = SVG_W;
+        this.canvas.height = SVG_H;
+        this.canvas.className = 'track-map-canvas';
+        this.ctx = this.canvas.getContext('2d');
+
+        this._wrapper.appendChild(this._svgImg);
+        this._wrapper.appendChild(this.canvas);
+        this.container.appendChild(this._wrapper);
         this.container.appendChild(this._resetBtn);
 
-        // Parse polyline
-        const polyline = this.svgElement.querySelector('polyline');
-        if (!polyline) {
-            this._showFallback('No polyline in SVG');
-            return;
-        }
-
-        this.polylinePoints = polyline.getAttribute('points')
-            .trim()
-            .split(/\s+/)
-            .map(p => {
-                const [x, y] = p.split(',').map(Number);
-                return { x, y };
-            });
-
-        // For reverse circuits, reverse the points so 0% is the reverse-layout start
-        if (this.isReverse) {
-            this.polylinePoints.reverse();
-        }
-
-        this._computeSegmentLengths();
+        // Attach mouse/touch events for interaction
+        this._initCanvasInteraction();
     }
 
-    _computeSegmentLengths() {
-        this.segmentLengths = [];
-        this.totalLength = 0;
+    // -- World->SVG pixel transform (affine 6-coefficient) ----------------
 
-        for (let i = 1; i < this.polylinePoints.length; i++) {
-            const dx = this.polylinePoints[i].x - this.polylinePoints[i - 1].x;
-            const dy = this.polylinePoints[i].y - this.polylinePoints[i - 1].y;
-            const len = Math.sqrt(dx * dx + dy * dy);
-            this.segmentLengths.push(len);
-            this.totalLength += len;
+    _worldToPixel(worldX, worldZ) {
+        const tf = this._currentTf;
+        const px = tf.a * worldX + tf.b * worldZ + tf.c;
+        const py = tf.d * worldX + tf.e * worldZ + tf.f;
+        return { px, py };
+    }
+
+    // -- Render loop ------------------------------------------------------
+
+    _startRenderLoop() {
+        if (this._rafId) return;
+        this._rafId = requestAnimationFrame(this._boundRenderLoop);
+    }
+
+    _stopRenderLoop() {
+        if (this._rafId) {
+            cancelAnimationFrame(this._rafId);
+            this._rafId = null;
         }
     }
 
-    // ── position interpolation ──────────────────────────────────────
+    _renderLoop() {
+        this._rafId = requestAnimationFrame(this._boundRenderLoop);
 
-    /**
-     * Interpolate a position on the polyline at the given progress (0–100 %).
-     * Returns { x, y } in SVG coordinate space.
-     */
-    _getPositionAtProgress(progress) {
-        const clamped = Math.max(0, Math.min(progress, 100));
-        let target = (clamped / 100) * this.totalLength;
+        const ctx = this.ctx;
+        if (!ctx) return;
 
-        let accumulated = 0;
-        for (let i = 0; i < this.segmentLengths.length; i++) {
-            const segLen = this.segmentLengths[i];
-            if (accumulated + segLen >= target) {
-                const frac = (segLen > 0) ? (target - accumulated) / segLen : 0;
-                const p1 = this.polylinePoints[i];
-                const p2 = this.polylinePoints[i + 1];
-                return {
-                    x: p1.x + (p2.x - p1.x) * frac,
-                    y: p1.y + (p2.y - p1.y) * frac,
-                };
-            }
-            accumulated += segLen;
-        }
+        // Clear transparent canvas (SVG background is a separate DOM element)
+        ctx.clearRect(0, 0, SVG_W, SVG_H);
 
-        // Edge case: return the last point
-        const last = this.polylinePoints[this.polylinePoints.length - 1];
-        return { x: last.x, y: last.y };
-    }
-
-    // ── driver dots ─────────────────────────────────────────────────
-
-    _createDriverDot() {
-        // Invisible larger hit-area for touch devices
-        const hitArea = document.createElementNS(SVG_NS, 'circle');
-        hitArea.setAttribute('r', '16');
-        hitArea.setAttribute('fill', 'transparent');
-        hitArea.setAttribute('stroke', 'none');
-        hitArea.classList.add('track-map-hit-area');
-
-        const circle = document.createElementNS(SVG_NS, 'circle');
-        circle.setAttribute('r', '8');
-        circle.classList.add('track-map-driver-dot');
-
-        // Mouse events (desktop)
-        circle.addEventListener('mouseenter', (e) => this._showTooltip(e, circle));
-        circle.addEventListener('mouseleave', ()  => this._hideTooltip());
-        circle.addEventListener('mousemove',  (e) => this._positionTooltip(e));
-
-        // Click to pin/unpin popup
-        const handlePinClick = () => {
-            if (this._pinnedDriver === parseInt(circle.dataset.driverIndex)) {
-                this._unpinPopup();
-            } else {
-                this._pinPopup(circle);
-            }
-        };
-        circle.addEventListener('click', handlePinClick);
-        hitArea.addEventListener('click', handlePinClick);
-
-        // Touch events on hit-area (tap to toggle tooltip)
-        hitArea.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            this._toggleTooltipTouch(e, circle);
+        // Interpolate and draw driver dots
+        // Sort so player/teammate render on top
+        const sorted = [...this._drivers.values()].sort((a, b) => {
+            if (a.data.isRef) return 1;
+            if (b.data.isRef) return -1;
+            if (a.data.isTeammate) return 1;
+            if (b.data.isTeammate) return -1;
+            return 0;
         });
 
-        this.svgElement.appendChild(hitArea);
-        this.svgElement.appendChild(circle);
+        for (const driver of sorted) {
+            // Smooth interpolation towards target
+            driver.currentX += (driver.targetX - driver.currentX) * LERP_FACTOR;
+            driver.currentY += (driver.targetY - driver.currentY) * LERP_FACTOR;
 
-        // Link hit-area to circle for position sync
-        circle._hitArea = hitArea;
-        return circle;
+            const x = driver.currentX;
+            const y = driver.currentY;
+            const d = driver.data;
+
+            const radius = d.isRef ? DOT_RADIUS_REF : DOT_RADIUS;
+
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, Math.PI * 2);
+            ctx.fillStyle = d.teamColor || '#888';
+            ctx.fill();
+
+            if (d.isRef) {
+                ctx.strokeStyle = '#FFD700';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            } else if (d.isTeammate) {
+                ctx.strokeStyle = '#C0C0C0';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+        }
+
+        // Update pinned popup position
+        if (this._pinnedDriver !== null) {
+            const driver = this._drivers.get(this._pinnedDriver);
+            if (driver) {
+                this._updatePinnedPopupPosition(driver);
+            }
+        }
     }
 
-    // ── tooltip ─────────────────────────────────────────────────────
+    // -- Canvas interaction (hover, click, touch) -------------------------
+
+    _initCanvasInteraction() {
+        // Mouse move -> tooltip on hover
+        this.canvas.addEventListener('mousemove', (e) => {
+            const hit = this._hitTestDrivers(e.clientX, e.clientY);
+            if (hit) {
+                if (this._pinnedDriver === hit.data.index) {
+                    this._hideTooltip();
+                    this.canvas.style.cursor = 'pointer';
+                    return;
+                }
+                this._showTooltip(e, hit.data);
+                this.canvas.style.cursor = 'pointer';
+            } else {
+                this._hideTooltip();
+                this.canvas.style.cursor = (this._zoom > 1) ? 'grab' : '';
+            }
+        });
+
+        this.canvas.addEventListener('mouseleave', () => {
+            this._hideTooltip();
+        });
+
+        // Click -> pin/unpin popup
+        this.canvas.addEventListener('click', (e) => {
+            const hit = this._hitTestDrivers(e.clientX, e.clientY);
+            if (hit) {
+                if (this._pinnedDriver === hit.data.index) {
+                    this._unpinPopup();
+                } else {
+                    this._pinPopup(hit);
+                }
+            }
+        });
+
+        // Touch tap -> toggle tooltip or pin
+        this.canvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return;
+            const touch = e.touches[0];
+            const hit = this._hitTestDrivers(touch.clientX, touch.clientY);
+            if (hit) {
+                e.preventDefault();
+                this._toggleTooltipTouch(touch, hit.data);
+            }
+        }, { passive: false });
+    }
+
+    /**
+     * Hit-test: find the topmost driver dot at a screen position.
+     * Converts screen coords -> SVG-pixel coords via the canvas bounding rect
+     * (which already accounts for CSS zoom/pan transforms).
+     */
+    _hitTestDrivers(clientX, clientY) {
+        if (!this.canvas) return null;
+        const rect = this.canvas.getBoundingClientRect();
+
+        const svgX = ((clientX - rect.left) / rect.width) * SVG_W;
+        const svgY = ((clientY - rect.top) / rect.height) * SVG_H;
+
+        // Check all drivers, find closest within hit radius
+        let best = null;
+        let bestDist = HIT_RADIUS;
+
+        for (const driver of this._drivers.values()) {
+            const dx = svgX - driver.currentX;
+            const dy = svgY - driver.currentY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = driver;
+            }
+        }
+        return best;
+    }
+
+    /** Quick check if a screen position hits any driver (for touch dismiss). */
+    _isDriverHit(clientX, clientY) {
+        return this._hitTestDrivers(clientX, clientY) !== null;
+    }
+
+    // -- tooltip ----------------------------------------------------------
 
     _createTooltip() {
         this.tooltip = document.createElement('div');
@@ -385,22 +491,20 @@ class TrackMap {
         document.body.appendChild(this.tooltip);
     }
 
-    _showTooltip(event, dot) {
-        if (this._pinnedDriver === parseInt(dot.dataset.driverIndex)) return;
-
-        const name    = escapeHtml(dot.dataset.driverName || '');
-        const team    = dot.dataset.driverTeam || '';
-        const abbr    = escapeHtml(this._getTeamAbbreviation(team));
-        const ers     = escapeHtml(dot.dataset.ersPercent  || 'N/A');
-        const ersMode = escapeHtml(dot.dataset.ersMode     || 'N/A');
-        const wear    = escapeHtml(dot.dataset.tyreWearAvg || 'N/A');
+    _showTooltip(event, data) {
+        const name    = escapeHtml(data.name || '');
+        const abbr    = escapeHtml(this._getTeamAbbreviation(data.team));
+        const ers     = escapeHtml(data.ersPercent  || 'N/A');
+        const ersMode = escapeHtml(data.ersMode     || 'N/A');
+        const wear    = escapeHtml(data.tyreWearAvg || 'N/A');
 
         this.tooltip.innerHTML =
-            `<strong>${name} (${abbr})</strong><br>` +
-            `ERS: ${ers}% (${ersMode})<br>` +
-            `Tyre Wear: ${wear}%`;
+            '<strong>' + name + ' (' + abbr + ')</strong><br>' +
+            'ERS: ' + ers + '% (' + ersMode + ')<br>' +
+            'Tyre Wear: ' + wear + '%';
         this.tooltip.style.display = 'block';
         this._positionTooltip(event);
+        this._activeTooltipDot = data.index;
     }
 
     _positionTooltip(event) {
@@ -413,30 +517,28 @@ class TrackMap {
         this._activeTooltipDot = null;
     }
 
-    _toggleTooltipTouch(event, dot) {
-        if (this._activeTooltipDot === dot) {
+    _toggleTooltipTouch(touch, data) {
+        if (this._activeTooltipDot === data.index) {
             this._hideTooltip();
         } else {
-            const touch = event.touches[0];
-            const name    = escapeHtml(dot.dataset.driverName || '');
-            const team    = dot.dataset.driverTeam || '';
-            const abbr    = escapeHtml(this._getTeamAbbreviation(team));
-            const ers     = escapeHtml(dot.dataset.ersPercent  || 'N/A');
-            const ersMode = escapeHtml(dot.dataset.ersMode     || 'N/A');
-            const wear    = escapeHtml(dot.dataset.tyreWearAvg || 'N/A');
+            const name    = escapeHtml(data.name || '');
+            const abbr    = escapeHtml(this._getTeamAbbreviation(data.team));
+            const ers     = escapeHtml(data.ersPercent  || 'N/A');
+            const ersMode = escapeHtml(data.ersMode     || 'N/A');
+            const wear    = escapeHtml(data.tyreWearAvg || 'N/A');
 
             this.tooltip.innerHTML =
-                `<strong>${name} (${abbr})</strong><br>` +
-                `ERS: ${ers}% (${ersMode})<br>` +
-                `Tyre Wear: ${wear}%`;
+                '<strong>' + name + ' (' + abbr + ')</strong><br>' +
+                'ERS: ' + ers + '% (' + ersMode + ')<br>' +
+                'Tyre Wear: ' + wear + '%';
             this.tooltip.style.display = 'block';
             this.tooltip.style.left = (touch.pageX + 12) + 'px';
             this.tooltip.style.top  = (touch.pageY - 28) + 'px';
-            this._activeTooltipDot = dot;
+            this._activeTooltipDot = data.index;
         }
     }
 
-    // ── pinned popup ────────────────────────────────────────────────
+    // -- pinned popup -----------------------------------------------------
 
     _createPinnedPopup() {
         this._pinnedPopup = document.createElement('div');
@@ -450,13 +552,12 @@ class TrackMap {
         document.body.appendChild(this._pinnedPopup);
     }
 
-    _pinPopup(dot) {
-        const index = parseInt(dot.dataset.driverIndex);
+    _pinPopup(driverState) {
+        const index = driverState.data.index;
         this._pinnedDriver = index;
         this._pinnedPopup.style.display = 'block';
-        this._updatePinnedPopupContent(dot);
-        // Start rAF tracking loop
-        this._startPopupTracking();
+        this._updatePinnedPopupContent(driverState.data);
+        this._updatePinnedPopupPosition(driverState);
         // Hide hover tooltip to avoid duplication
         this._hideTooltip();
     }
@@ -464,48 +565,37 @@ class TrackMap {
     _unpinPopup() {
         this._pinnedDriver = null;
         this._pinnedPopup.style.display = 'none';
-        this._stopPopupTracking();
     }
 
-    /** rAF loop that keeps the popup glued to the dot's animated position. */
-    _startPopupTracking() {
-        this._stopPopupTracking();
-        const track = () => {
-            const dot = this._pinnedDriver != null
-                ? this.driverDots.get(this._pinnedDriver)
-                : null;
-            if (!dot) { this._popupRafId = null; return; }
-            const rect = dot.getBoundingClientRect();
-            this._pinnedPopup.style.left = (rect.right + window.scrollX + 8) + 'px';
-            this._pinnedPopup.style.top  = (rect.top + window.scrollY - 10) + 'px';
-            this._popupRafId = requestAnimationFrame(track);
-        };
-        this._popupRafId = requestAnimationFrame(track);
+    /** Position the pinned popup next to the driver dot (screen coords). */
+    _updatePinnedPopupPosition(driverState) {
+        if (!this.canvas) return;
+        const rect = this.canvas.getBoundingClientRect();
+
+        // Convert SVG-pixel -> screen pixel (rect already includes CSS transforms)
+        const screenX = rect.left + (driverState.currentX / SVG_W) * rect.width;
+        const screenY = rect.top  + (driverState.currentY / SVG_H) * rect.height;
+
+        this._pinnedPopup.style.left = (screenX + window.scrollX + 12) + 'px';
+        this._pinnedPopup.style.top  = (screenY + window.scrollY - 10) + 'px';
     }
 
-    _stopPopupTracking() {
-        if (this._popupRafId) {
-            cancelAnimationFrame(this._popupRafId);
-            this._popupRafId = null;
-        }
-    }
-
-    _updatePinnedPopupContent(dot) {
-        const name     = escapeHtml(dot.dataset.driverName || '');
-        const team     = dot.dataset.driverTeam || '';
+    _updatePinnedPopupContent(data) {
+        const name     = escapeHtml(data.name || '');
+        const team     = data.team || '';
         const abbr     = escapeHtml(this._getTeamAbbreviation(team));
-        const pos      = escapeHtml(dot.dataset.position || '');
-        const ers      = escapeHtml(dot.dataset.ersPercent || 'N/A');
-        const ersMode  = escapeHtml(dot.dataset.ersMode || 'N/A');
-        const wear     = escapeHtml(dot.dataset.tyreWearAvg || 'N/A');
-        const compound = escapeHtml(dot.dataset.tyreCompound || 'N/A');
+        const pos      = escapeHtml(String(data.position || ''));
+        const ers      = escapeHtml(data.ersPercent || 'N/A');
+        const ersMode  = escapeHtml(data.ersMode || 'N/A');
+        const wear     = escapeHtml(data.tyreWearAvg || 'N/A');
+        const compound = escapeHtml(data.tyreCompound || 'N/A');
 
         this._pinnedPopup.innerHTML =
-            `<span class="pinned-popup-close">&times;</span>` +
-            `<strong>${name} (${abbr})</strong><br>` +
-            `P${pos} \u00b7 ${compound}<br>` +
-            `ERS: ${ers}% (${ersMode})<br>` +
-            `Wear: ${wear}%`;
+            '<span class="pinned-popup-close">&times;</span>' +
+            '<strong>' + name + ' (' + abbr + ')</strong><br>' +
+            'P' + pos + ' \u00b7 ' + compound + '<br>' +
+            'ERS: ' + ers + '% (' + ersMode + ')<br>' +
+            'Wear: ' + wear + '%';
         this._pinnedPopup.style.borderColor = getF1TeamColor(team);
     }
 
@@ -526,7 +616,7 @@ class TrackMap {
         return map[teamName] || (teamName || '').slice(0, 3).toUpperCase();
     }
 
-    // ── helpers ──────────────────────────────────────────────────────
+    // -- helpers ----------------------------------------------------------
 
     _avgTyreWear(wearData) {
         if (!wearData) return 'N/A';
@@ -541,26 +631,28 @@ class TrackMap {
     }
 
     _showFallback(message) {
+        this._stopRenderLoop();
         this.container.innerHTML =
-            `<div class="track-map-fallback">${escapeHtml(message)}</div>`;
-        this.svgElement = null;
-        this.polylinePoints = [];
-        this.segmentLengths = [];
-        this.totalLength = 0;
-        this.driverDots.clear();
+            '<div class="track-map-fallback">' + escapeHtml(message) + '</div>';
+        this._wrapper = null;
+        this._svgImg = null;
+        this.canvas = null;
+        this.ctx = null;
+        this._currentTf = null;
+        this._drivers.clear();
         this._unpinPopup();
         this._resetZoomState();
         // Re-append reset button (innerHTML wiped it)
         this.container.appendChild(this._resetBtn);
     }
 
-    // ── Zoom & Pan ──────────────────────────────────────────────────
+    // -- Zoom & Pan -------------------------------------------------------
 
     _initZoomControls() {
         // Create reset button
         this._resetBtn = document.createElement('button');
         this._resetBtn.className = 'track-map-zoom-reset';
-        this._resetBtn.textContent = '↺';
+        this._resetBtn.textContent = '\u21ba';
         this._resetBtn.title = 'Reset zoom';
         this._resetBtn.style.display = 'none';
         this._resetBtn.addEventListener('click', (e) => {
@@ -571,7 +663,7 @@ class TrackMap {
 
         // Wheel zoom
         this.container.addEventListener('wheel', (e) => {
-            if (!this.svgElement) return;
+            if (!this.canvas) return;
             e.preventDefault();
             const rect = this.container.getBoundingClientRect();
             const cursorX = e.clientX - rect.left;
@@ -582,16 +674,16 @@ class TrackMap {
 
         // Double-click reset
         this.container.addEventListener('dblclick', (e) => {
-            if (!this.svgElement) return;
+            if (!this.canvas) return;
             e.preventDefault();
             this.resetZoom();
         });
 
         // Mouse drag pan
         this.container.addEventListener('mousedown', (e) => {
-            if (!this.svgElement || this._zoom <= 1) return;
-            if (e.target.classList.contains('track-map-driver-dot') ||
-                e.target.classList.contains('track-map-hit-area')) return;
+            if (!this.canvas || this._zoom <= 1) return;
+            // Don't start pan if clicking on a driver dot
+            if (this._hitTestDrivers(e.clientX, e.clientY)) return;
             e.preventDefault();
             this._isPanning = true;
             this._panStartX = e.clientX;
@@ -618,14 +710,13 @@ class TrackMap {
 
         // Touch: pinch-to-zoom + pan
         this.container.addEventListener('touchstart', (e) => {
-            if (!this.svgElement) return;
+            if (!this.canvas) return;
             if (e.touches.length === 2) {
                 e.preventDefault();
                 this._lastPinchDist = this._getTouchDist(e.touches);
             } else if (e.touches.length === 1 && this._zoom > 1) {
                 const touch = e.touches[0];
-                if (touch.target.classList.contains('track-map-driver-dot') ||
-                    touch.target.classList.contains('track-map-hit-area')) return;
+                if (this._hitTestDrivers(touch.clientX, touch.clientY)) return;
                 this._isPanning = true;
                 this._panStartX = touch.clientX;
                 this._panStartY = touch.clientY;
@@ -635,7 +726,7 @@ class TrackMap {
         }, { passive: false });
 
         this.container.addEventListener('touchmove', (e) => {
-            if (!this.svgElement) return;
+            if (!this.canvas) return;
             if (e.touches.length === 2) {
                 e.preventDefault();
                 const dist = this._getTouchDist(e.touches);
@@ -687,25 +778,19 @@ class TrackMap {
     }
 
     _clampPan() {
-        const w = this.container.clientWidth;
-        const h = this.container.clientHeight;
-        const maxPanX = (this._zoom - 1) * w / 2;
-        const maxPanY = (this._zoom - 1) * h / 2;
+        if (!this._wrapper) return;
+        const ww = this._wrapper.offsetWidth;
+        const wh = this._wrapper.offsetHeight;
+        const maxPanX = (this._zoom - 1) * ww / 2;
+        const maxPanY = (this._zoom - 1) * wh / 2;
         this._panX = Math.max(-maxPanX, Math.min(maxPanX, this._panX));
         this._panY = Math.max(-maxPanY, Math.min(maxPanY, this._panY));
     }
 
     _applyTransform() {
-        if (!this.svgElement) return;
-        this.svgElement.style.transform = `translate(${this._panX}px, ${this._panY}px) scale(${this._zoom})`;
-
-        // Update pinned popup position after transform change
-        if (this._pinnedDriver !== null) {
-            const dot = this.driverDots.get(this._pinnedDriver);
-            if (dot) {
-                requestAnimationFrame(() => this._updatePinnedPopupPosition(dot));
-            }
-        }
+        if (!this._wrapper) return;
+        this._wrapper.style.transform =
+            'translate(' + this._panX + 'px, ' + this._panY + 'px) scale(' + this._zoom + ')';
     }
 
     _resetZoomState() {

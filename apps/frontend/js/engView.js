@@ -2135,8 +2135,9 @@ function initDashboard() {
 
         // Track Map: load circuit SVG (no-op if already loaded) then update driver dots
         const circuit = data["circuit"];
-        if (circuit) {
-            trackMap.loadTrack(circuit);
+        const gameYear = data["f1-game-year"];
+        if (circuit && gameYear) {
+            trackMap.loadTrack(circuit, gameYear);
         }
         if (tableEntries && tableEntries.length > 0) {
             trackMap.updateDrivers(
@@ -2201,7 +2202,7 @@ class DrawerManager {
         // Observer: moves track map content to drawer when injected at < 1024px
         this._trackMapObserver = new MutationObserver(() => {
             if (this._drawerMediaQuery.matches && this.trackMapInlineParent.firstChild) {
-                // Clear stale content (old SVG / fallback) before moving fresh content.
+                // Clear stale content (old canvas / fallback) before moving fresh content.
                 // Guard: only act when inline has content — the move itself triggers
                 // a second observer callback (removal from inline) which must be a no-op.
                 this.trackMapDrawerBody.innerHTML = '';

@@ -349,7 +349,15 @@ class DriversListRsp(BaseAPI):
             "damage-info": self._getDamageInfoJSON(driver_data),
             "fuel-info": driver_data.getFuelStatsJSON(),
             "pit-info": driver_data.getPitInfoJSON(),
+            "world-pos": self._getWorldPosJSON(driver_data),
         }
+
+    def _getWorldPosJSON(self, driver_data: DataPerDriver) -> Optional[List[float]]:
+        """Extract world position [x, z] for track map rendering."""
+        motion = driver_data.m_packet_copies.m_packet_motion
+        if not motion:
+            return None
+        return [motion.m_worldPositionX, motion.m_worldPositionZ]
 
     def _getDriverInfoJSON(self, index: int, driver_data: DataPerDriver) -> Dict[str, Any]:
         """Extract driver information section for JSON response.

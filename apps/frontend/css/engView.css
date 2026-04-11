@@ -145,6 +145,7 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 0.5rem;
     background: var(--f1-dark);
     color: var(--f1-text);
 }
@@ -459,29 +460,46 @@ input[type="number"]::-webkit-outer-spin-button {
 
 /* ── Track Map ─────────────────────────────────────────────────── */
 
+.track-map-col {
+    align-self: start;
+}
+
+.global-stats-section-header > :nth-child(2) {
+    margin-left: auto;
+}
+
 #trackMapContainer {
     position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
-    aspect-ratio: 5 / 3;
+    width: 100%;
     min-width: 200px;
-    max-width: 400px;
+    max-width: 500px;
     margin: 0 auto;
     overflow: hidden;
 }
 
-.track-map-svg {
+.track-map-wrapper {
+    position: relative;
     width: 100%;
-    height: auto;
-    transform-origin: 0 0;
+    aspect-ratio: 5 / 3;
+    transform-origin: center center;
     will-change: transform;
 }
 
-.track-map-driver-dot {
-    /* Smooth dot movement between update cycles */
-    transition: cx 0.4s ease, cy 0.4s ease;
-    cursor: pointer;
+.track-map-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.track-map-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
 }
 
 .track-map-tooltip {
@@ -776,7 +794,7 @@ input[type="number"]::-webkit-outer-spin-button {
     max-width: none;
     width: 100%;
     margin: 0;
-    aspect-ratio: 5 / 3;
+    aspect-ratio: 1 / 1;
     min-width: 0;
     overflow: hidden;
 }

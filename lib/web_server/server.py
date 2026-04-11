@@ -534,14 +534,24 @@ class BaseWebServer:
             route_handler = make_static_route_handler(route, config['file'], config['mimetype'])
             self.m_app.route(route)(route_handler)
 
-        # Dynamic route for track map SVGs.
+        # Dynamic routes for track map SVGs and transforms, organized by game year.
         # send_from_directory handles path-traversal protection via safe_join.
         track_maps_dir = assets_dir / "track-maps"
 
-        async def serve_track_map(filename: str):
-            return await self.send_from_directory(track_maps_dir, filename, mimetype='image/svg+xml')
+        # Per-game SVG transforms: /track-maps/f1_2025/svg_transforms.json
+        async def serve_svg_transforms(game_year: str):
+            game_dir = track_maps_dir / f"f1_{game_year}"
+            return await self.send_from_directory(game_dir, 'svg_transforms.json',
+                                                  mimetype='application/json')
 
-        self.m_app.route('/track-maps/<filename>')(serve_track_map)
+        self.m_app.route('/track-maps/f1_<game_year>/svg_transforms.json')(serve_svg_transforms)
+
+        # Per-game SVG track maps: /track-maps/f1_2025/Singapore.svg
+        async def serve_track_map(game_year: str, filename: str):
+            game_dir = track_maps_dir / f"f1_{game_year}"
+            return await self.send_from_directory(game_dir, filename, mimetype='image/svg+xml')
+
+        self.m_app.route('/track-maps/f1_<game_year>/<filename>')(serve_track_map)
 
     def validate_int_get_request_param(self, param: Any, param_name: str) -> Optional[Dict[str, Any]]:
         """
