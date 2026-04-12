@@ -48,7 +48,8 @@ class SaveViewerIpc:
         """
         self.m_logger = logger
         self.m_server = server
-        self.m_should_open_ui = True
+        self.m_is_headless = os.environ.get("PNG_HEADLESS") == "1"
+        self.m_should_open_ui = not self.m_is_headless
         self.m_ipc_server = IpcServerAsync(name="Save Viewer")
         self._register_routes()
         report_ipc_port_from_child(self.m_ipc_server.port)
@@ -60,18 +61,22 @@ class SaveViewerIpc:
     def _register_routes(self):
         """Registers routes for the IPC server."""
 
-        @self.m_ipc_server.on_heartbeat_missed
-        async def _heartbeat_missed_handler(count: int) -> dict:
-            """Handle terminate command"""
+        # In headless mode (Docker/server), no launcher sends heartbeats.
+        # The built-in default handler is a no-op, so we only register
+        # the termination callback for non-headless (desktop) operation.
+        if not self.m_is_headless:
+            @self.m_ipc_server.on_heartbeat_missed
+            async def _heartbeat_missed_handler(count: int) -> dict:
+                """Handle terminate command"""
 
-            # print() is intentional: in orphaned state there is no parent process
-            # to consolidate JSON log records, so print() is the only reliable output.
-            print(f"[SAVE_VIEWER] Missed heartbeat {count} times. "
-                  "This process has probably been orphaned. Terminating...")
-            # Forceful exit required — this is an orphaned child process whose parent (launcher) is gone.
-            # sys.exit() would only raise SystemExit, which asyncio's event loop and atexit handlers
-            # may catch or delay, leaving the save viewer process hanging indefinitely.
-            os._exit(PNG_LOST_CONN_TO_PARENT)
+                # print() is intentional: in orphaned state there is no parent process
+                # to consolidate JSON log records, so print() is the only reliable output.
+                print(f"[SAVE_VIEWER] Missed heartbeat {count} times. "
+                      "This process has probably been orphaned. Terminating...")
+                # Forceful exit required — this is an orphaned child process whose parent (launcher) is gone.
+                # sys.exit() would only raise SystemExit, which asyncio's event loop and atexit handlers
+                # may catch or delay, leaving the save viewer process hanging indefinitely.
+                os._exit(PNG_LOST_CONN_TO_PARENT)
 
         @self.m_ipc_server.on_shutdown
         async def _shutdown_handler(args: dict) -> Dict[str, Any]:
