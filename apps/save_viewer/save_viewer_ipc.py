@@ -64,8 +64,8 @@ class SaveViewerIpc:
         async def _heartbeat_missed_handler(count: int) -> dict:
             """Handle terminate command"""
 
-            print(f"[SAVE_VIEWER] Missed heartbeat {count} times. "
-                  "This process has probably been orphaned. Terminating...")
+            self.m_logger.error("Missed heartbeat %d times. "
+                  "This process has probably been orphaned. Terminating...", count)
             # Forceful exit required — this is an orphaned child process whose parent (launcher) is gone.
             # sys.exit() would only raise SystemExit, which asyncio's event loop and atexit handlers
             # may catch or delay, leaving the save viewer process hanging indefinitely.

@@ -6,8 +6,10 @@ PacketLapData to produce accurate SVG polylines matching the game's
 internal track geometry.
 
 Usage:
-    python assets/track-maps/pcap_to_svg.py test_data/f1_24_mp_spectator_bahrain.f1pcap -o Sakhir_Bahrain.svg
-    python assets/track-maps/pcap_to_svg.py test_data/f1_25_sp_aus_5lap_1stop.f1pcap -o Melbourne.svg
+    python apps/dev_tools/pcap_to_svg.py test_data/f1_24_mp_spectator_bahrain.f1pcap -o Sakhir_Bahrain.svg
+    python apps/dev_tools/pcap_to_svg.py test_data/f1_25_sp_aus_5lap_1stop.f1pcap -o Melbourne.svg
+
+Output is written to assets/track-maps/f1_<game_year>/ (auto-detected from pcap).
 """
 
 import argparse
@@ -31,6 +33,26 @@ class TrackPoint(NamedTuple):
     lap_distance: float
     world_x: float
     world_z: float
+
+
+def extract_game_year(pcap_path: str) -> int:
+    """Read the game year from the first valid packet header.
+
+    Returns:
+        Full game year (e.g. 2025), or 0 if unreadable.
+    """
+    pcap = F1PacketCapture(file_name=pcap_path)
+    header_len = PacketHeader.PACKET_LEN
+    for _, raw in pcap.getPackets():
+        if len(raw) < header_len:
+            continue
+        try:
+            header = PacketHeader(raw[:header_len])
+            year = header.m_gameYear
+            return 2000 + year if year < 100 else year
+        except Exception:
+            continue
+    return 0
 
 
 def extract_track_points(pcap_path: str, min_lap: int = 2) -> List[TrackPoint]:
@@ -316,8 +338,16 @@ def main() -> None:
         print(f"Error: file not found: {pcap_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Output path: default to track-maps/ directory
-    svg_dir = Path(__file__).resolve().parents[2] / "assets" / "track-maps"
+    # Detect game year from pcap header
+    game_year = extract_game_year(pcap_path)
+    if game_year == 0:
+        print("Error: could not detect game year from pcap.", file=sys.stderr)
+        sys.exit(1)
+    print(f"Detected game year: F1 {game_year}")
+
+    # Output path: game-year-aware subfolder (e.g. assets/track-maps/f1_2025/)
+    svg_dir = Path(__file__).resolve().parents[2] / "assets" / "track-maps" / f"f1_{game_year}"
+    svg_dir.mkdir(parents=True, exist_ok=True)
     if args.output:
         output_path = str(svg_dir / args.output)
     else:

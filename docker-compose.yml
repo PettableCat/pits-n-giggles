@@ -1,0 +1,16 @@
+services:
+  pits-n-giggles:
+    build: .
+    container_name: pits-n-giggles
+    # network_mode: host is required for UDP telemetry reception from the game
+    # and for multi-session support (additional ports from config).
+    network_mode: host
+    volumes:
+      # Mount config so it can be edited without rebuilding
+      - ./png_config.json:/app/png_config.json:ro
+      # Persist race data across container restarts
+      - ./data:/app/data
+    environment:
+      - PNG_HEADLESS=1
+      - PNG_HTTP_PORT=4768
+    restart: unless-stopped
